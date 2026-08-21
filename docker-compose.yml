@@ -1,0 +1,38 @@
+services:
+  redis:
+    image: redis:7.2-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - receipt-redis-data:/data
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: receipt_review
+      MYSQL_USER: receipt_user
+      MYSQL_PASSWORD: receipt_password
+      MYSQL_ROOT_PASSWORD: root_password
+      TZ: Asia/Seoul
+    ports:
+      - "3306:3306"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot_password"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - receipt-mysql-data:/var/lib/mysql
+
+volumes:
+  receipt-mysql-data:
+  receipt-redis-data:

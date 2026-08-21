@@ -1,0 +1,15 @@
+.gradle/
+build/
+out/
+.idea/
+*.iml
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
+uploads/
+secrets/
+*.key
+*.pem
+src/main/resources/application-local.yml
