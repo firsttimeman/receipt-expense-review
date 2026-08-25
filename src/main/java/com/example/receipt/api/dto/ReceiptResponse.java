@@ -11,6 +11,7 @@ public record ReceiptResponse(
         long version,
         String companyId,
         ReceiptStatus status,
+        ExtractionJobStatus jobStatus,
         ReceiptData originalData,
         ReceiptData currentData,
         List<RuleResult> ruleResults,
@@ -18,8 +19,8 @@ public record ReceiptResponse(
         Instant createdAt,
         Instant updatedAt
 ) {
-    public static ReceiptResponse from(Receipt receipt) {
-        return new ReceiptResponse(receipt.id(), receipt.version(), receipt.companyId(), receipt.status(),
+    public static ReceiptResponse from(Receipt receipt, ExtractionJobStatus jobStatus) {
+        return new ReceiptResponse(receipt.id(), receipt.version(), receipt.companyId(), receipt.status(), jobStatus,
                 receipt.originalData(), receipt.currentData(), receipt.ruleResults(),
                 new FileMetadata(receipt.originalFileName(), receipt.contentType(), receipt.fileSize(),
                         receipt.imageSha256()),

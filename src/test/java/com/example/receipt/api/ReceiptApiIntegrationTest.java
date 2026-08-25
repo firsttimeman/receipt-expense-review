@@ -1,10 +1,14 @@
 package com.example.receipt.api;
 
 import com.example.receipt.service.ReceiptUploadService;
+import com.example.receipt.service.ReceiptExtractionProcessor;
+import com.example.receipt.service.ReceiptJobClaimService;
+import com.example.receipt.service.model.ClaimedReceiptJob;
 import com.example.receipt.service.model.UploadResult;
 import com.example.receipt.repository.AuditEventRepository;
 import com.example.receipt.repository.IdempotencyRecordRepository;
 import com.example.receipt.repository.ReceiptRepository;
+import com.example.receipt.repository.ReceiptExtractionJobRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.*;
@@ -21,6 +25,7 @@ import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.*;
@@ -36,7 +41,10 @@ class ReceiptApiIntegrationTest {
     @Autowired MockMvc mockMvc;
     @Autowired ObjectMapper objectMapper;
     @Autowired ReceiptUploadService uploadService;
+    @Autowired ReceiptExtractionProcessor extractionProcessor;
+    @Autowired ReceiptJobClaimService claimService;
     @Autowired ReceiptRepository receiptRepository;
+    @Autowired ReceiptExtractionJobRepository jobRepository;
     @Autowired AuditEventRepository auditRepository;
     @Autowired IdempotencyRecordRepository idempotencyRepository;
 
@@ -44,14 +52,27 @@ class ReceiptApiIntegrationTest {
     void cleanDatabase() {
         auditRepository.deleteAll();
         idempotencyRepository.deleteAll();
+        jobRepository.deleteAll();
         receiptRepository.deleteAll();
     }
 
     @Test
-    void uploadsAndAutoApprovesClearReceipt() throws Exception {
-        JsonNode response = upload("receipt.png", png(800, 1200), null, 201);
+    void acceptsReceiptDurablyThenProcessesAndAutoApprovesIt() throws Exception {
+        JsonNode accepted = upload("receipt.png", png(800, 1200), "durable-upload-001", 202);
+        assertThat(accepted.path("jobStatus").asText()).isEqualTo("QUEUED");
+        JsonNode queued = getReceipt(accepted.path("receiptId").asLong());
+        assertThat(queued.path("status").isNull()).isTrue();
+        assertThat(queued.path("jobStatus").asText()).isEqualTo("QUEUED");
+        assertThat(receiptRepository.count()).isOne();
+        assertThat(jobRepository.count()).isOne();
+        assertThat(idempotencyRepository.count()).isOne();
+        assertThat(auditRepository.count()).isOne();
+
+        process(accepted.path("receiptId").asLong());
+        JsonNode response = getReceipt(accepted.path("receiptId").asLong());
 
         assertThat(response.path("status").asText()).isEqualTo("AUTO_APPROVED");
+        assertThat(response.path("jobStatus").asText()).isEqualTo("COMPLETED");
         assertThat(response.path("originalData").path("merchant").asText()).isEqualTo("테스트상점");
         assertThat(response.path("currentData").path("totalAmount").decimalValue()).isEqualByComparingTo("12000");
         assertThat(response.path("file").path("sha256").asText()).hasSize(64);
@@ -59,15 +80,21 @@ class ReceiptApiIntegrationTest {
 
     @Test
     void routesLowResolutionAndUnreadableImagesSafely() throws Exception {
-        assertThat(upload("small.png", png(200, 300), null, 201).path("status").asText())
+        JsonNode small = upload("small.png", png(200, 300), null, 202);
+        process(small.path("receiptId").asLong());
+        assertThat(getReceipt(small.path("receiptId").asLong()).path("status").asText())
                 .isEqualTo("NEEDS_RECAPTURE");
-        assertThat(upload("broken.png", new byte[]{1, 2, 3, 4}, null, 201).path("status").asText())
+        JsonNode broken = upload("broken.png", new byte[]{1, 2, 3, 4}, null, 202);
+        process(broken.path("receiptId").asLong());
+        assertThat(getReceipt(broken.path("receiptId").asLong()).path("status").asText())
                 .isEqualTo("UNREADABLE");
     }
 
     @Test
     void supportsFieldCorrectionFinalDecisionAndAuditTrail() throws Exception {
-        JsonNode uploaded = upload("missing-merchant.png", png(800, 1200), null, 201);
+        JsonNode accepted = upload("missing-merchant.png", png(800, 1200), null, 202);
+        process(accepted.path("receiptId").asLong());
+        JsonNode uploaded = getReceipt(accepted.path("receiptId").asLong());
         String id = uploaded.path("id").asText();
         long version = uploaded.path("version").asLong();
         assertThat(uploaded.path("status").asText()).isEqualTo("NEEDS_REVIEW");
@@ -99,10 +126,13 @@ class ReceiptApiIntegrationTest {
 
     @Test
     void rejectsStaleReviewerVersion() throws Exception {
-        JsonNode uploaded = upload("missing-merchant.png", png(800, 1200), null, 201);
+        JsonNode accepted = upload("missing-merchant.png", png(800, 1200), null, 202);
+        process(accepted.path("receiptId").asLong());
+        JsonNode uploaded = getReceipt(accepted.path("receiptId").asLong());
+        long version = uploaded.path("version").asLong();
         String body = """
-                {"version":0,"reviewerId":"reviewer-1","merchant":"첫 수정"}
-                """;
+                {"version":%d,"reviewerId":"reviewer-1","merchant":"첫 수정"}
+                """.formatted(version);
         mockMvc.perform(patch("/api/receipts/{id}/fields", uploaded.path("id").asText())
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk());
@@ -116,22 +146,26 @@ class ReceiptApiIntegrationTest {
     // 같은 중복 요청 방지 키로 재전송하면 최초 영수증을 반환하는지 검증한다.
     void idempotencyKeyReplaysSameReceipt() throws Exception {
         byte[] image = png(800, 1200);
-        JsonNode first = upload("receipt.png", image, "upload-001", 201);
+        JsonNode first = upload("receipt.png", image, "upload-001", 202);
         JsonNode second = upload("receipt.png", image, "upload-001", 200);
 
-        assertThat(second.path("id").asText()).isEqualTo(first.path("id").asText());
+        assertThat(second.path("receiptId").asText()).isEqualTo(first.path("receiptId").asText());
         assertThat(receiptRepository.count()).isOne();
+        assertThat(jobRepository.count()).isOne();
     }
 
     @Test
     void duplicateImageBecomesReviewTargetWithoutCreatingSecondRow() throws Exception {
         byte[] image = png(800, 1200);
-        JsonNode first = upload("first.png", image, null, 201);
+        JsonNode first = upload("first.png", image, null, 202);
+        process(first.path("receiptId").asLong());
         JsonNode second = upload("second.png", image, null, 200);
 
-        assertThat(second.path("id").asText()).isEqualTo(first.path("id").asText());
-        assertThat(second.path("status").asText()).isEqualTo("NEEDS_REVIEW");
+        assertThat(second.path("receiptId").asText()).isEqualTo(first.path("receiptId").asText());
+        assertThat(getReceipt(first.path("receiptId").asLong()).path("status").asText())
+                .isEqualTo("NEEDS_REVIEW");
         assertThat(receiptRepository.count()).isOne();
+        assertThat(jobRepository.count()).isOne();
     }
 
     @Test
@@ -152,7 +186,8 @@ class ReceiptApiIntegrationTest {
 
             assertThat(ids).hasSize(1);
             assertThat(receiptRepository.count()).isOne();
-            assertThat(receiptRepository.findAll().getFirst().status().name()).isEqualTo("NEEDS_REVIEW");
+            assertThat(jobRepository.count()).isOne();
+            assertThat(receiptRepository.findAll().get(0).status()).isNull();
         } finally {
             executor.shutdownNow();
         }
@@ -167,6 +202,22 @@ class ReceiptApiIntegrationTest {
                 .andExpect(status().is(expectedStatus))
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
         return objectMapper.readTree(json);
+    }
+
+    private JsonNode getReceipt(long receiptId) throws Exception {
+        String json = mockMvc.perform(get("/api/receipts/{id}", receiptId))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+        return objectMapper.readTree(json);
+    }
+
+    private void process(long receiptId) {
+        ClaimedReceiptJob claimedJob = claimService.claimAvailable(
+                        "api-integration-test", 10, Duration.ofSeconds(30)).stream()
+                .filter(job -> job.receiptId().equals(receiptId))
+                .findFirst()
+                .orElseThrow();
+        extractionProcessor.process(claimedJob);
     }
 
     private byte[] png(int width, int height) throws Exception {

@@ -16,5 +16,7 @@ spring:
     enabled: false
 
 receipt:
+  worker:
+    enabled: false
   extractor:
     provider: fake

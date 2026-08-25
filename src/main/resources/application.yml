@@ -2,7 +2,7 @@ spring:
   application:
     name: receipt-expense-review
   datasource:
-    url: ${DB_URL:jdbc:mysql://localhost:3306/receipt_review?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=utf8}
+    url: ${DB_URL:jdbc:mysql://localhost:3307/receipt_review?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=utf8}
     username: ${DB_USERNAME:receipt_user}
     password: ${DB_PASSWORD:receipt_password}
   data:
@@ -25,6 +25,15 @@ spring:
       max-request-size: 10MB
 
 receipt:
+  storage:
+    local-directory: ${RECEIPT_IMAGE_STORAGE_DIRECTORY:./runtime/receipt-images}
+  worker:
+    enabled: ${RECEIPT_WORKER_ENABLED:true}
+    poll-delay-millis: ${RECEIPT_WORKER_POLL_DELAY_MILLIS:1000}
+    lease-duration: ${RECEIPT_WORKER_LEASE_DURATION:60s}
+    batch-size: ${RECEIPT_WORKER_BATCH_SIZE:4}
+    concurrency: ${RECEIPT_WORKER_CONCURRENCY:4}
+    worker-id: ${RECEIPT_WORKER_ID:}
   extractor:
     provider: ${RECEIPT_EXTRACTOR_PROVIDER:fake}
   quality:
@@ -39,8 +48,10 @@ receipt:
       - 성인
   openai:
     api-key: ${OPENAI_API_KEY:}
-    model: ${OPENAI_MODEL:gpt-5.4-mini}
-    base-url: ${OPENAI_BASE_URL:https://api.openai.com}
+    model: ${OPENAI_MODEL:}
+    base-url: ${OPENAI_BASE_URL:}
+    connect-timeout: ${OPENAI_CONNECT_TIMEOUT:3s}
+    response-timeout: ${OPENAI_RESPONSE_TIMEOUT:30s}
 
 server:
   error:

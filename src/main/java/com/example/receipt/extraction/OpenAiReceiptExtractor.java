@@ -4,8 +4,13 @@ import com.example.receipt.config.ReceiptProperties;
 import com.example.receipt.domain.ReceiptData;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.util.Base64;
 import java.util.List;
@@ -25,7 +30,13 @@ public class OpenAiReceiptExtractor implements ReceiptExtractor {
     public OpenAiReceiptExtractor(ReceiptProperties.OpenAi properties, ObjectMapper objectMapper) {
         this.properties = properties;
         this.objectMapper = objectMapper;
-        this.restClient = RestClient.builder().baseUrl(properties.baseUrl()).build();
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        requestFactory.setConnectTimeout(toMillis(properties.connectTimeout()));
+        requestFactory.setReadTimeout(toMillis(properties.responseTimeout()));
+        this.restClient = RestClient.builder()
+                .baseUrl(properties.baseUrl())
+                .requestFactory(requestFactory)
+                .build();
     }
 
     @Override
@@ -64,9 +75,25 @@ public class OpenAiReceiptExtractor implements ReceiptExtractor {
             return new ExtractionResult(data, "openai", properties.model());
         } catch (ExtractionException exception) {
             throw exception;
+        } catch (RestClientResponseException exception) {
+            throw new ExtractionException(
+                    "OpenAI 요청에 실패했습니다. HTTP 상태: " + exception.getStatusCode().value(),
+                    exception);
+        } catch (ResourceAccessException exception) {
+            throw new ExtractionException("OpenAI 연결 또는 응답 제한 시간을 초과했습니다.", exception);
+        } catch (RestClientException exception) {
+            throw new ExtractionException("OpenAI 응답 본문을 해석하지 못했습니다.", exception);
+        } catch (JsonProcessingException exception) {
+            throw new ExtractionException(
+                    "OpenAI 구조화 응답을 영수증 데이터로 변환하지 못했습니다.", exception);
         } catch (Exception exception) {
-            throw new ExtractionException("OpenAI 영수증 추출에 실패했습니다.", exception);
+            throw new ExtractionException(
+                    "OpenAI 영수증 추출 중 예상하지 못한 오류가 발생했습니다.", exception);
         }
+    }
+
+    private int toMillis(java.time.Duration duration) {
+        return Math.toIntExact(Math.min(duration.toMillis(), Integer.MAX_VALUE));
     }
 
     private Map<String, Object> receiptFormat() {

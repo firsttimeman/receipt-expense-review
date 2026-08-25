@@ -9,13 +9,14 @@
 - 모델이 스스로 만든 confidence 숫자는 판단에 사용하지 않습니다.
 - 원본 추출값, 검수 수정값, 규칙 결과, 상태 변경을 감사 이벤트로 남깁니다.
 - 실제 영수증, 개인정보, API 키는 저장소에 커밋하지 않습니다.
-- MVP는 이미지 원본을 영속 저장하지 않고 SHA-256과 파일 메타데이터만 저장합니다.
+- 비동기 처리에 필요한 원본은 저장소 포트 뒤에 격리하며, 로컬 개발에서는 Git 제외 경로에 보관합니다. 운영에서는 암호화된 객체 스토리지와 보존·삭제 정책으로 교체해야 합니다.
 
 ## 기술 스택
 
-- Java 21, Spring Boot 3.3, Gradle 8
+- Java 17, Spring Boot 3.3, Gradle 8
 - Spring MVC, Bean Validation, Spring Data JPA, Hibernate
-- MySQL 8.4 LTS, Flyway, Redis 7.2, Redisson
+- MySQL 8.4 LTS, Flyway, MySQL 기반 내구성 작업 큐, Redis 7.2, Redisson
+- MySQL `RETRY_WAIT` 기반 고정 지연 내구성 재시도
 - OpenAI Responses API 또는 결정론적 Fake 추출기
 - Spring Boot Actuator, Micrometer, Prometheus registry
 - JUnit 5, AssertJ, MockMvc, H2, Testcontainers MySQL
@@ -36,6 +37,7 @@ com.example.receipt
 ├── validation      # 결정론적 검증과 상태 라우팅
 ├── extraction      # Fake/OpenAI 추출기
 ├── quality         # 이미지 품질 검사
+├── storage         # 비동기 처리를 위한 이미지 저장소 포트와 로컬 구현
 ├── concurrency     # 동일 이미지 동시 처리 잠금
 └── config          # 애플리케이션 설정
 ```
@@ -46,21 +48,42 @@ com.example.receipt
 
 ```mermaid
 flowchart LR
-    A["이미지 업로드"] --> B["이미지 디코딩·해상도 검사"]
-    B -->|"품질 통과"| C["Fake 또는 OpenAI 구조화 추출"]
-    B -->|"저해상도/판독 불가"| F["안전 상태 라우팅"]
-    C --> D["결정론적 검증"]
-    D --> E["경비 정책 검사"]
-    E --> F
-    F --> G["자동 처리 또는 사람 검수"]
-    G --> H["필드 수정·승인·반려"]
-    A --> I["감사 로그"]
-    C --> I
-    D --> I
-    H --> I
+    A["이미지 업로드"] --> B["이미지 저장"]
+    B --> C["Receipt + ExtractionJob + 감사 로그 저장"]
+    C --> D["202 Accepted"]
+    C --> E["MySQL Worker 선점<br/>FOR UPDATE SKIP LOCKED"]
+    E --> F["비동기 Processor<br/>Lease 기반 소유권 검증"]
+    F --> G["HTTP Timeout<br/>Fake 또는 OpenAI 구조화 추출"]
+    G --> H["결정론적 검증·경비 정책"]
+    H --> I["자동 처리 또는 사람 검수"]
+    I --> J["필드 수정·승인·반려"]
 ```
 
 ## 구현된 안전장치
+
+### 내구성 있는 비동기 접수
+
+- 업로드 요청 경로에서는 이미지 품질 검사와 외부 AI를 호출하지 않습니다.
+- 이미지 저장이 끝난 뒤 `Receipt`, `ReceiptExtractionJob`, `IdempotencyRecord`, `UPLOADED` 감사 이벤트를 MySQL 한 트랜잭션으로 저장합니다.
+- 최초 접수는 `202 Accepted`와 `receiptId`, `jobId`, `jobStatus=QUEUED`를 반환합니다.
+- 처리 전에는 영수증 업무 상태 `status`가 `null`이고, 기술 상태는 별도 `jobStatus`가 나타냅니다.
+- Scheduler가 실행 가능한 Job을 주기적으로 찾고, MySQL `SELECT ... FOR UPDATE SKIP LOCKED`로 여러 Worker가 서로 기다리거나 같은 행을 중복 선점하지 않게 합니다.
+- 고정 크기 Executor와 Semaphore로 인스턴스별 외부 AI 동시 호출 수를 제한합니다.
+- Job 선점 시 `workerId`, 매번 새로 발급하는 `claimToken`, `leaseUntil`을 기록합니다. 완료 트랜잭션은 이 소유권이 현재도 유효할 때만 Receipt와 Job 결과를 함께 반영합니다.
+- Worker가 종료되어 `PROCESSING`에 남은 Job은 Lease 만료 후 다시 `QUEUED`로 복구합니다. 이전 Worker가 뒤늦게 결과를 보내도 만료된 `claimToken`이므로 반영하지 않습니다.
+- `ReceiptExtractionProcessor`는 DB 트랜잭션 밖에서 이미지 품질 검사와 외부 AI 호출을 수행하고, 결과 반영 구간만 짧은 트랜잭션으로 처리합니다.
+- 개발용 원본 저장소는 `./runtime/receipt-images`이며 저장소에 커밋되지 않습니다.
+
+### 외부 AI 장애 격리와 복구
+
+- OpenAI 연결 3초, 응답 30초의 명시적인 Timeout을 적용합니다.
+- AI 추출 중 `ExtractionException`이 발생하면 오류 종류를 세분화하지 않고 같은 정책으로 처리합니다.
+- 실패한 Job은 `RETRY_WAIT`로 저장하고 `availableAt` 이후 Worker가 다시 선점합니다. Worker 스레드를 기다리게 하는 `sleep` 재시도는 사용하지 않습니다.
+- 정책은 최초 호출을 포함해 최대 3회, 매번 10초 후 다시 처리하는 고정 지연 방식입니다. 두 값은 `ReceiptExtractionProcessor` 상수로 한곳에서 확인할 수 있습니다.
+- 3단계에서 구현한 고정 크기 Executor와 Semaphore를 Bulkhead로 사용해 한 인스턴스의 외부 AI 동시 호출 수를 제한합니다.
+- 세 번째 시도도 실패하면 자동 승인하지 않고 Receipt `MANUAL_ENTRY`, Job `FAILED`로 전환합니다.
+- 재시도 예약과 최종 실패는 감사 이벤트에 시도 횟수와 다음 실행 시각을 기록합니다. 공급자 응답 본문은 기록하지 않습니다.
+- 학습과 설명 가능성을 우선한 의도적인 단순화이므로 401·잘못된 요청처럼 재시도로 회복되지 않는 오류도 최대 3회 호출될 수 있습니다. 오류별 정책과 Circuit Breaker는 실제 운영 지표가 필요성을 보여줄 때 도입합니다.
 
 ### 중복 제출과 멱등성
 
@@ -69,7 +92,7 @@ flowchart LR
 - `(company_id, image_sha256)` MySQL Unique Constraint가 최종 중복 방어선입니다.
 - 동일 이미지를 다시 제출하면 새 레코드를 만들지 않고 기존 건을 `NEEDS_REVIEW`로 전환합니다.
 - `Idempotency-Key`가 같으면 기존 응답을 재사용합니다.
-- 애플리케이션 선조회는 불필요한 AI 재호출을 줄이지만, 정합성은 DB 제약조건이 보장합니다.
+- 업로드 경로에서 먼저 하나의 Job으로 수렴시키므로 동시 요청이 AI를 직접 중복 호출하지 않습니다. 정합성의 최종 방어선은 DB 제약조건입니다.
 - `(companyId, imageSha256)` 기반 Redisson 분산 락으로 동일 이미지 처리를 직렬화합니다.
 - Redis 락 획득 후 MySQL을 다시 조회하며, 최초 요청만 생성하고 후속 요청은 기존 영수증을 중복 처리합니다.
 - Redis는 동시 실행을 제어하고 MySQL Unique Constraint는 최종 데이터 정합성을 보장합니다.
@@ -106,16 +129,29 @@ flowchart LR
 
 ## 실행
 
-필수 조건은 JDK 21과 Docker입니다.
+필수 조건은 JDK 17과 Docker입니다. 현재 구현은 Virtual Thread 등 Java 21 전용 기능을 사용하지 않으므로, Spring Boot 3.3이 지원하는 안정적인 LTS 기준선인 Java 17을 사용합니다.
 
 ```bash
 docker compose up -d mysql redis
 ./gradlew bootRun
 ```
 
+로컬에 설치된 MySQL의 기본 포트 `3306`과 충돌하지 않도록 Docker MySQL은 호스트의 `3307` 포트에 연결됩니다. 컨테이너 내부에서는 기존처럼 `3306`을 사용합니다.
+
 기본 추출기는 API 키가 필요 없는 `fake`입니다. 애플리케이션 기본 주소는 `http://localhost:8080`입니다.
 
-### OpenAI 추출기 사용
+실제 영수증 없이도 `samples/synthetic-receipt.png`로 업로드 흐름을 확인할 수 있습니다. 이 이미지는 실제 거래·개인정보·사업자번호·카드번호를 포함하지 않는 합성 테스트 자료입니다.
+
+```bash
+curl -i -X POST http://localhost:8080/api/receipts \
+  -H 'X-Company-Id: demo-company' \
+  -H 'Idempotency-Key: synthetic-upload-001' \
+  -F 'file=@samples/synthetic-receipt.png'
+```
+
+IntelliJ IDEA에서는 [http/receipt-api.http](http/receipt-api.http)를 열고 각 요청 왼쪽의 실행 버튼을 위에서 아래 순서로 누르면 `202 Accepted` 접수 뒤 Worker가 `QUEUED → PROCESSING → COMPLETED`로 처리하는 흐름과 감사 로그를 확인할 수 있습니다. 응답의 `receiptId`는 HTTP Client 전역 변수에 자동으로 연결됩니다.
+
+### OpenAI 추출기 설정
 
 ```bash
 export RECEIPT_EXTRACTOR_PROVIDER=openai
@@ -125,6 +161,23 @@ export OPENAI_MODEL=gpt-5.4-mini
 ```
 
 OpenAI 어댑터는 Responses API 이미지 입력과 strict JSON Schema 구조화 출력을 사용합니다. 구현 기준은 공식 OpenAI 문서의 [Images and vision](https://developers.openai.com/api/docs/guides/images-vision)과 [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)입니다.
+
+기본 설정에서는 자동 Worker가 활성화되므로 위 설정으로 실행하면 접수된 Job을 약 1초 이내에 선점해 추출합니다. 로컬에서 접수 상태만 관찰하려면 `RECEIPT_WORKER_ENABLED=false`로 실행할 수 있습니다.
+
+Worker 주요 설정은 다음과 같습니다.
+
+- `RECEIPT_WORKER_POLL_DELAY_MILLIS`: DB polling 간격(기본 1000ms)
+- `RECEIPT_WORKER_LEASE_DURATION`: 처리 소유권 만료 시간(기본 60s)
+- `RECEIPT_WORKER_BATCH_SIZE`: 한 번의 polling에서 선점할 최대 Job 수(기본 4)
+- `RECEIPT_WORKER_CONCURRENCY`: 인스턴스별 동시 처리 수(기본 4)
+- `RECEIPT_WORKER_ID`: Worker 식별자. 비워두면 실행 시 고유값 생성
+
+OpenAI 연결 제한 설정은 다음과 같습니다.
+
+- `OPENAI_CONNECT_TIMEOUT`: 연결 제한 시간(기본 3s)
+- `OPENAI_RESPONSE_TIMEOUT`: 응답 제한 시간(기본 30s). Worker Lease보다 짧아야 함
+
+재시도 횟수 3회와 지연 10초는 현재 MVP에서 `ReceiptExtractionProcessor`의 `MAX_ATTEMPTS`, `RETRY_DELAY` 상수로 고정했습니다. 운영에서 회사별·공급자별 조정 요구가 생기면 설정값으로 분리합니다.
 
 키가 없을 때도 기본 Fake 추출기로 애플리케이션과 전체 테스트를 실행할 수 있습니다. `openai`를 선택했지만 키가 없다면 추출 건은 자동 승인되지 않고 `MANUAL_ENTRY`로 안전하게 전환됩니다.
 
@@ -137,6 +190,17 @@ curl -i -X POST http://localhost:8080/api/receipts \
   -H 'X-Company-Id: demo-company' \
   -H 'Idempotency-Key: upload-001' \
   -F 'file=@synthetic-receipt.png'
+```
+
+최초 접수 응답은 다음 형태이며 HTTP 상태는 `202 Accepted`입니다.
+
+```json
+{
+  "receiptId": 1,
+  "jobId": 1,
+  "jobStatus": "QUEUED",
+  "acceptedAt": "2026-08-23T10:00:00Z"
+}
 ```
 
 ### 조회 및 감사 로그
@@ -207,13 +271,22 @@ Fake 추출기는 파일 내용에 개인정보를 넣지 않고 파일명으로
 - 사업자등록번호 체크섬 단위 테스트
 - 필수 필드·날짜·금액·경비 정책·상태 라우팅 단위 테스트
 - API 키 없는 OpenAI 어댑터 실패 안전 테스트
+- OpenAI 429·503·401·응답 Timeout을 `ExtractionException`으로 안전하게 감싸는 테스트
+- 추출 실패 후 10초 뒤 재선점해 성공하는 고정 지연 재시도 테스트
+- 세 번 연속 추출 실패 시 Job `FAILED`, Receipt `MANUAL_ENTRY` 전환 테스트
+- MySQL `RETRY_WAIT` 재선점 후 성공 및 감사 이벤트 통합 테스트
 - 업로드부터 자동 승인까지의 통합 테스트
+- 업로드 API의 `202 Accepted` 및 `QUEUED` 작업 저장
 - 저해상도와 판독 불가 라우팅
 - 검수 수정, 승인, 감사 로그
 - 오래된 버전을 이용한 수정 충돌
 - Idempotency-Key 재전송
 - 동일 이미지 중복 제출
 - 다중 스레드 동시 제출 시 단일 레코드 수렴
+- 동일 이미지 100건 동시 접수 시 Receipt 1건, Job 1건, 업로드 중 추출기 호출 0회
+- Scheduler가 `QUEUED` Job을 자동으로 한 번만 추출해 `COMPLETED`로 전환
+- Testcontainers MySQL 8.4에서 두 Worker가 6개 Job을 `SKIP LOCKED`로 중복 없이 분배
+- Worker 중단을 재현한 Lease 만료 Job의 재선점과 이전 Worker 결과 차단
 - Testcontainers MySQL 8.4와 Redis 7.2에서 Flyway/JPA 스키마와 실제 분산 락 동시성 검증
 
 ## 설정
@@ -222,13 +295,14 @@ Fake 추출기는 파일 내용에 개인정보를 넣지 않고 파일명으로
 
 ## 현재 범위와 다음 단계
 
-현재 구현은 핵심 정합성과 검수 흐름을 우선한 MVP입니다.
+현재 구현은 핵심 정합성과 검수 흐름을 우선한 MVP이며 장애 대응 로드맵의 4단계까지 완료했습니다.
 
-- 외부 AI 호출은 현재 요청 내에서 동기 처리됩니다. 다음 단계는 객체 스토리지, 작업 큐, Transactional Outbox를 이용한 내구성 있는 비동기 처리입니다.
+- 업로드 접수와 외부 AI 처리를 분리하고, MySQL 다중 Worker 선점, Lease 기반 중단 작업 복구, 고정 지연 DB 재시도와 동시 호출 제한을 적용했습니다. 다음 단계는 Redis를 정합성 필수 경로에서 제거하는 작업입니다.
+- 현재 Lease는 처리 중 자동 연장하지 않습니다. 대신 OpenAI 응답 Timeout이 Lease보다 짧도록 시작 시 검증합니다. 프로세스 정지나 GC pause처럼 Lease를 넘기는 상황에서는 외부 호출이 `at-least-once`가 될 수 있지만, `claimToken` 검증으로 오래된 결과의 DB 반영은 차단합니다.
 - 회사 정책은 설정 파일 기반입니다. 다중 회사 정책을 MySQL에서 관리하게 되면 Redis Cache-Aside, 정책 버전 키, 변경 이벤트 기반 무효화를 추가할 계획입니다.
 - 인증·권한은 아직 없습니다. 검수자 역할 기반 접근 제어가 필요합니다.
 - 흐림, 잘림, 반사광 검사는 아직 없습니다. OpenCV 도입 전에 평가 데이터와 임계값을 먼저 정의해야 합니다.
-- 원본 이미지를 운영에서 저장하려면 암호화된 객체 스토리지, 제한된 보존 기간, 접근 로그와 삭제 정책이 필요합니다.
+- 로컬 이미지 저장 구현은 개발·장애 실험용입니다. 운영에서는 암호화된 객체 스토리지, 제한된 보존 기간, 접근 로그, 고아 파일 정리와 삭제 정책이 필요합니다.
 - Actuator와 Prometheus 레지스트리는 포함했으며, 다음 단계에서 자동 처리율·검수 전환율·재촬영률·처리 시간·모델 비용 지표를 추가합니다.
 
 캐시는 정합성 요구와 무효화 전략이 정의된 데이터에만 적용합니다. 변경이 잦은 영수증 상태를 무조건 캐싱하지 않고, 변경 빈도가 낮은 회사 정책과 사업자 조회 결과를 우선 대상으로 삼습니다.
@@ -236,3 +310,5 @@ Fake 추출기는 파일 내용에 개인정보를 넣지 않고 파일명으로
 ## 변경 기록
 
 기능, 버그 수정, DB 스키마, 동시성·보안 설계의 변경과 검증 결과는 [CHANGELOG.md](CHANGELOG.md)에 계속 누적합니다.
+
+외부 AI 장애, 중복 호출, 비동기 Worker 복구, 관측 가능성, 규칙 정확성과 정책 캐시의 단계별 고도화 계획은 [RESILIENCE_ROADMAP.md](RESILIENCE_ROADMAP.md)에 기록합니다.

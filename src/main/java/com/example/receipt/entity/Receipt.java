@@ -50,7 +50,7 @@ public class Receipt {
     private ReceiptData currentData;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 32)
+    @Column(length = 32)
     private ReceiptStatus status;
 
     @JdbcTypeCode(SqlTypes.JSON)
@@ -97,6 +97,16 @@ public class Receipt {
     public Instant updatedAt() { return updatedAt; }
 
     public void updateData(ReceiptData data, List<RuleResult> results, ReceiptStatus nextStatus, Instant at) {
+        currentData = data;
+        ruleResults = List.copyOf(results);
+        status = nextStatus;
+        updatedAt = at;
+    }
+
+    /** 비동기 추출이 끝난 시점에 AI 원본 제안과 현재값을 최초로 함께 기록한다. */
+    public void completeExtraction(ReceiptData data, List<RuleResult> results,
+                                   ReceiptStatus nextStatus, Instant at) {
+        originalData = data;
         currentData = data;
         ruleResults = List.copyOf(results);
         status = nextStatus;

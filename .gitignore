@@ -9,6 +9,7 @@ out/
 !.env.example
 *.log
 uploads/
+runtime/
 secrets/
 *.key
 *.pem

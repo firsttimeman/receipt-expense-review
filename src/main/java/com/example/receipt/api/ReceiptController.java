@@ -3,6 +3,7 @@ package com.example.receipt.api;
 import com.example.receipt.api.dto.AuditEventResponse;
 import com.example.receipt.api.dto.CorrectFieldsRequest;
 import com.example.receipt.api.dto.ReceiptResponse;
+import com.example.receipt.api.dto.ReceiptAcceptedResponse;
 import com.example.receipt.api.dto.ReviewDecisionRequest;
 import com.example.receipt.service.ReceiptCommandService;
 import com.example.receipt.service.ReceiptQueryService;
@@ -35,7 +36,7 @@ public class ReceiptController {
      * @param idempotencyKey 동일 업로드 요청 재전송 시 중복 처리를 막는 요청 키
      */
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<ReceiptResponse> upload(
+    public ResponseEntity<ReceiptAcceptedResponse> upload(
             @RequestHeader("X-Company-Id")
             @NotBlank @Pattern(regexp = "[A-Za-z0-9_-]{1,64}") String companyId,
             @RequestHeader(value = "Idempotency-Key", required = false)
@@ -43,9 +44,11 @@ public class ReceiptController {
             @RequestPart("file") MultipartFile file) throws IOException {
         UploadResult result = uploadService.upload(companyId, idempotencyKey, file.getOriginalFilename(),
                 file.getContentType(), file.getBytes());
-        ReceiptResponse body = ReceiptResponse.from(result.receipt());
+        ReceiptAcceptedResponse body = ReceiptAcceptedResponse.from(result);
         if (result.created()) {
-            return ResponseEntity.created(URI.create("/api/receipts/" + body.id())).body(body);
+            return ResponseEntity.accepted()
+                    .location(URI.create("/api/receipts/" + body.receiptId()))
+                    .body(body);
         }
         return ResponseEntity.ok()
                 .header("X-Idempotent-Replay", Boolean.toString(result.idempotentReplay()))
@@ -54,7 +57,7 @@ public class ReceiptController {
 
     @GetMapping("/{id}")
     public ReceiptResponse get(@PathVariable Long id) {
-        return ReceiptResponse.from(queryService.get(id));
+        return ReceiptResponse.from(queryService.get(id), queryService.getJob(id).status());
     }
 
     @GetMapping("/{id}/audit-events")
@@ -65,12 +68,12 @@ public class ReceiptController {
     @PatchMapping("/{id}/fields")
     public ReceiptResponse correctFields(@PathVariable Long id, @Valid @RequestBody CorrectFieldsRequest request) {
         return ReceiptResponse.from(commandService.correctFields(id, request.version(), request.reviewerId(),
-                request.toCorrections()));
+                request.toCorrections()), queryService.getJob(id).status());
     }
 
     @PostMapping("/{id}/decision")
     public ReceiptResponse decide(@PathVariable Long id, @Valid @RequestBody ReviewDecisionRequest request) {
         return ReceiptResponse.from(commandService.decide(id, request.version(), request.reviewerId(),
-                request.decision(), request.note()));
+                request.decision(), request.note()), queryService.getJob(id).status());
     }
 }

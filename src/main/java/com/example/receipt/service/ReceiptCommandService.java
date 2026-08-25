@@ -95,6 +95,9 @@ public class ReceiptCommandService {
     }
 
     private void ensureNotTerminal(Receipt receipt) {
+        if (receipt.status() == null) {
+            throw new ReceiptConflictException("AI 추출 작업이 완료된 뒤 검수할 수 있습니다.");
+        }
         if (receipt.status() == ReceiptStatus.APPROVED || receipt.status() == ReceiptStatus.REJECTED) {
             throw new ReceiptConflictException("이미 최종 처리된 영수증은 변경할 수 없습니다.");
         }
