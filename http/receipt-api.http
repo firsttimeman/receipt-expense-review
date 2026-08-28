@@ -68,3 +68,7 @@ Accept: application/json
 ### 7. 실제 영수증 2 감사 로그 - Worker 선점·추출·검증 확인
 GET {{baseUrl}}/api/receipts/{{receipt2Id}}/audit-events
 Accept: application/json
+
+### 8. Prometheus 메트릭 - 최소 receipt_ 지표와 Spring 기본 지표 확인
+GET {{baseUrl}}/actuator/prometheus
+Accept: text/plain

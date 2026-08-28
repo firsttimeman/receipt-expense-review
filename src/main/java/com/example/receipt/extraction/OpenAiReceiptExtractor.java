@@ -31,17 +31,17 @@ public class OpenAiReceiptExtractor implements ReceiptExtractor {
         this.properties = properties;
         this.objectMapper = objectMapper;
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
-        requestFactory.setConnectTimeout(toMillis(properties.connectTimeout()));
-        requestFactory.setReadTimeout(toMillis(properties.responseTimeout()));
+        requestFactory.setConnectTimeout(toMillis(properties.getConnectTimeout()));
+        requestFactory.setReadTimeout(toMillis(properties.getResponseTimeout()));
         this.restClient = RestClient.builder()
-                .baseUrl(properties.baseUrl())
+                .baseUrl(properties.getBaseUrl())
                 .requestFactory(requestFactory)
                 .build();
     }
 
     @Override
     public ExtractionResult extract(ExtractionRequest request) {
-        if (properties.apiKey().isBlank()) {
+        if (properties.getApiKey().isBlank()) {
             throw new ExtractionException("OPENAI_API_KEY가 설정되지 않았습니다.");
         }
 
@@ -50,7 +50,7 @@ public class OpenAiReceiptExtractor implements ReceiptExtractor {
                 Base64.getEncoder().encodeToString(request.imageBytes()));
 
         Map<String, Object> body = Map.of(
-                "model", properties.model(),
+                "model", properties.getModel(),
                 "store", false,
                 "input", List.of(Map.of(
                         "role", "user",
@@ -66,13 +66,13 @@ public class OpenAiReceiptExtractor implements ReceiptExtractor {
             JsonNode response = restClient.post()
                     .uri("/v1/responses")
                     .contentType(MediaType.APPLICATION_JSON)
-                    .header("Authorization", "Bearer " + properties.apiKey())
+                    .header("Authorization", "Bearer " + properties.getApiKey())
                     .body(body)
                     .retrieve()
                     .body(JsonNode.class);
             String outputText = findOutputText(response);
             ReceiptData data = objectMapper.readValue(outputText, ReceiptData.class);
-            return new ExtractionResult(data, "openai", properties.model());
+            return new ExtractionResult(data, "openai", properties.getModel());
         } catch (ExtractionException exception) {
             throw exception;
         } catch (RestClientResponseException exception) {

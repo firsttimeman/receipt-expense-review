@@ -35,6 +35,25 @@
 
 ### Added
 
+- 8단계 성능 개선의 회귀 방지 테스트와 Grafana 전후 비교 패널을 추가했습니다.
+  - 처리 완료된 동일 이미지 100건이 추가 Redis 락 호출 없이 같은 Receipt를 반환하고 중복 감사 이벤트는 한 번만 남는지 검증
+  - 정기 polling 한 번 이후에도 Worker가 빈 슬롯을 즉시 보충해 후속 Job을 연속 처리하는지 검증
+  - 동일 이미지 처리량·P95와 고유 이미지 200 Job 완료 시간의 개선 전후를 대시보드에 표시
+- `receipt_upload_duplicate_fast_path_total` Counter를 추가해 중복 빠른 반환 경로 사용량을 확인할 수 있게 했습니다.
+- DB 적재 없이 운영 상태를 확인하는 최소 Micrometer/Prometheus 메트릭을 추가했습니다.
+  - 업로드 결과·중복, 추출 성공·재시도·최종 실패, Lease 복구 Counter
+  - MySQL 기준 미완료 Job 수 Gauge
+  - 영수증·회사·Worker 식별자는 태그에서 제외해 고카디널리티 방지
+- Docker Prometheus 서비스를 추가하고 Spring Boot의 `/actuator/prometheus`를 5초마다 수집하도록 구성했습니다.
+- 동일 합성 이미지 중복 업로드용 k6 스크립트에 Smoke·Normal·Heavy 부하 프로필을 추가했습니다.
+  - Compose의 `k6` 프로필 서비스로 로컬 k6 설치 없이 실행할 수 있습니다.
+  - 현재 한계 측정과 8단계 전후 비교를 위해 100 VU Stress와 200 VU Spike 프로필을 추가했습니다.
+- 200명이 서로 다른 합성 영수증을 한 번씩 제출하는 `k6-unique-upload.js`와 독립 성능 기록 문서를 추가했습니다.
+- 로컬 전용 Grafana 12.1과 자동 프로비저닝 대시보드를 추가했습니다.
+  - Prometheus 데이터 소스와 API 처리량·응답 시간·HikariCP 부하·미완료 Job 그래프 자동 등록
+  - 관리자 비밀번호는 Git 제외 경로의 Docker secret으로만 주입하고 포트는 `127.0.0.1:3000`으로 제한
+- 원본 2.4MB 이미지 대신 65KB·600x900 비민감 합성 JPEG를 사용해 파일 전송량이 API 로직 측정을 과도하게 지배하지 않도록 했습니다.
+- 최소 Counter와 미완료 Job Gauge 단위 테스트를 추가했습니다.
 - MySQL 작업 큐의 `RETRY_WAIT`와 `available_at`을 이용한 내구성 재시도를 구현했습니다.
   - 기본 최대 3회, 매번 10초 후 다시 처리하는 고정 지연
   - Worker 스레드에서 `sleep`하지 않고 다음 polling 시점 이후 다시 선점
@@ -67,7 +86,7 @@
   - 실제 API 키와 실제 영수증 없이 결정론적 Fake 추출기로 실행
 - 외부 AI 장애와 동시 요청에도 영수증을 유실하지 않는 시스템으로 고도화하기 위한 `RESILIENCE_ROADMAP.md`를 추가했습니다.
   - AI 중복 호출 재현부터 MySQL 내구성 작업 큐, Worker Lease 복구, 오류 분류와 장애 격리까지 1~6단계로 구성
-  - AI 정확성과 품목 정책, 회사 정책 DB화와 Redis Cache-Aside를 후속 7~8단계로 분리
+  - 회사 정책 DB화와 Redis Cache-Aside는 운영 필요가 생길 때 진행할 선택 과제로 분리
   - 각 단계의 구현 범위, 완료 조건, 권장 테스트와 커밋 메시지를 명시
 - IntelliJ HTTP Client에서 Fake 추출기의 전체 업무 흐름을 순서대로 실행할 수 있도록 `http/receipt-api.http`를 추가했습니다.
   - 헬스 체크, 합성 이미지 업로드, 조회, 감사 로그 확인
@@ -98,6 +117,19 @@
 
 ### Changed
 
+- 처리 완료된 동일 이미지 재제출은 `duplicateDetected`를 확인해 Redis 락을 다시 기다리지 않고 기존 Receipt와 Job을 반환하도록 개선했습니다.
+- Worker가 작업을 완료하면 다음 1초 polling을 기다리지 않고 빈 슬롯에 후속 Job 한 건을 즉시 보충하도록 변경했습니다.
+  - Executor 대기열은 Worker 간 짧은 인계 용도로만 `concurrency` 크기만큼 허용
+  - Semaphore가 실행 중·대기 중 작업 합계를 설정된 동시성 이하로 제한
+- 이력서용 MVP 범위를 장애 복구와 관측성까지로 확정하고, 현재 동작에 필요하지 않은 규칙 심각도·품목 정책·합성 AI 평가 코드를 제거했습니다.
+- 호출마다 DB 행을 누적하던 미커밋 `ExtractionAttempt` 설계를 제거했습니다.
+  - 엔티티·Repository·조회 API·Flyway V5·OpenAI 토큰/비용 추정 제거
+  - 개별 재시도와 최종 실패는 기존 감사 로그에서 추적
+  - P95/P99는 상시 애플리케이션 Histogram 대신 필요할 때 실행하는 k6에서 측정
+- 5단계 Redis 제거는 보류하고 현재 Redisson 분산 락을 1차 직렬화 수단으로 유지하기로 결정했습니다.
+  - MySQL Unique Constraint는 최종 데이터 정합성 방어선으로 계속 유지
+  - Redis 장애 시 신규 접수가 실패할 수 있는 한계를 수용된 위험으로 문서화
+  - 실제 장애 또는 Redis와 독립적인 접수 가용성 목표가 생기면 MySQL 폴백 구현을 재개
 - OpenAI HTTP 호출에 연결 제한 시간 3초와 응답 제한 시간 30초를 적용하고 환경변수로 조정할 수 있게 했습니다.
 - OpenAI 응답 본문이나 공급자 오류 본문은 감사 로그에 남기지 않고 분류 코드와 HTTP 상태만 기록하도록 변경했습니다.
 - 기존 Worker의 고정 크기 Executor와 Semaphore를 외부 AI Bulkhead로 유지해 인스턴스별 동시 호출 수를 제한했습니다.
@@ -139,6 +171,8 @@
 
 ### Fixed
 
+- 최초 동일 이미지 요청이 동시에 몰려 Redis 락 대기 시간이 초과되더라도 MySQL에 중복 처리 완료 행이 존재하면 `409` 대신 기존 결과를 반환하도록 보완했습니다.
+- Spring 컨텍스트 종료 이벤트에서 Worker polling을 먼저 중단하고 테스트 컨텍스트마다 H2 DB 이름을 격리해, 스키마 종료와 Scheduler 조회가 겹치며 발생하던 종료 시점 오류 로그를 제거했습니다.
 - 애플리케이션 컨텍스트 종료 중 Scheduler가 새 DB polling을 시작하지 않도록 Worker 종료 플래그를 추가했습니다.
 - 실제 MySQL 동시 업로드 테스트에서 유니크 인덱스 및 중복 상태 갱신 경합으로 발생한 데드락 희생 트랜잭션을 처리했습니다.
   - 증상: 동일 이미지 6건을 동시에 제출할 때 일부 요청이 `CannotAcquireLockException`으로 실패
@@ -149,6 +183,7 @@
 
 ### Security
 
+- 영수증·회사·Worker처럼 값이 계속 증가하는 식별자를 Prometheus 태그로 사용하지 않습니다.
 - 외부 API 응답 본문에 포함될 수 있는 민감정보를 오류 메시지와 감사 로그에 복사하지 않습니다.
 - `.env`, 로컬 설정, 키·인증서, 업로드 디렉터리를 Git 제외 대상으로 등록했습니다.
 - 업로드 파일명에서 경로 정보를 제거합니다.
@@ -158,6 +193,26 @@
 
 ### Verification
 
+- 8단계 동일 이미지 Spike 재측정: 200 VU·30초, 55,966건, 1,863.67 req/s, 평균 106.84ms, P95 242.90ms, P99 350.52ms, 실패율 0%
+- 개선 전 대비 동일 이미지 처리량 3.25배 증가, P95 70.5% 감소, Receipt 1건·Job 1건·중복 감사 이벤트 1건 수렴
+- 8단계 고유 이미지 200건 재측정: 563.42 req/s, P95 271.09ms, P99 292.65ms, 실패율 0%
+- 고유 Job 200건 전체 완료 시간 51.237초에서 1.5757초로 96.9% 감소, COMPLETED·AUTO_APPROVED 각각 200건과 감사 이벤트 800건 확인
+- Temurin JDK 17에서 `./gradlew test --rerun-tasks`: 전체 테스트 통과, 실패 0건, 건너뜀 0건
+- Docker Prometheus target `receipt-expense-review` 상태 `UP`, scrape 오류 없음
+- k6 Smoke: 5 VU·10초, 7,179건, 716.04 req/s, P95 20.31ms, P99 31.88ms, 실패율 0%
+- k6 Normal: 20 VU·30초, 24,682건, 822.10 req/s, P95 92.08ms, P99 162.45ms, 실패율 0%
+- k6 Heavy: 50 VU·60초, 48,103건, 800.86 req/s, P95 271.64ms, P99 451.76ms, 실패율 0%
+- k6 Stress: 100 VU·60초, 34,173건, 568.18 req/s, P95 398.08ms, P99 578.45ms, 실패율 0%
+- k6 Spike: 200 VU·30초, 17,368건, 573.60 req/s, P95 824.38ms, P99 1.21초, 실패율 0%
+- 100→200 VU에서 처리량은 약 570 req/s로 정체되고 P95가 약 2.1배 증가했으며, 같은 구간 애플리케이션 CPU 최대 12.82%, HikariCP 활성 1/10·대기 0, 미완료 Job 0 확인
+- 고부하 이후에도 DB에서 Receipt 1건, ExtractionJob 1건, Job COMPLETED로 수렴
+- 고유 이미지 200건 동시 접수: 약 0.5초, 419.16 req/s, P95 409.82ms, P99 447.19ms, 실패율 0%
+- 고유 Receipt·Job 각각 200건, 최대 미완료 Job 188건, 51.237초 후 COMPLETED·AUTO_APPROVED 각각 200건, 실패·유실·중복 0건 확인
+- 다섯 프로필 누적 131,505건에서 프로세스 CPU 최대 13.97%, HikariCP 활성 커넥션 최대 1, 미완료 Job 0 확인
+- Docker Compose k6 Heavy 재측정: 38,782건, 645.63 req/s, P95 170.43ms, P99 257.52ms, 실패율 0%
+- 같은 구간 MySQL CPU 최대 15.55%, 실행 스레드 최대 3, HikariCP 활성 최대 1/10·대기 0, 행 잠금 대기·Slow Query 0, 물리 Buffer Pool 읽기 증가 0 확인
+- Grafana health 정상, Prometheus 데이터 소스와 `영수증 API · DB 부하` 대시보드 프로비저닝 확인
+- DB에서 Receipt 1건, ExtractionJob 1건, Job `COMPLETED`로 수렴
 - Temurin JDK 17에서 `./gradlew test --rerun-tasks`: 24건 통과, 실패 0건, 건너뜀 0건
 - Worker concurrency를 1로 설정한 두 Job 처리에서 실제 외부 추출 구간의 최대 동시 호출이 1인지 검증
 - 추출 오류 1회 후 `RETRY_WAIT`에서 10초 뒤 재선점해 `COMPLETED`로 복구하고 추출기를 총 2회 호출
@@ -182,4 +237,3 @@
 - 객체 스토리지 암호화와 보존 기간 정책
 - 인증·인가 및 회사별 경비 규정 관리
 - 흐림·잘림·반사광 품질 검사
-- 운영 지표와 모델 비용 측정

@@ -1,7 +1,6 @@
 package com.example.receipt.config;
 
 import com.example.receipt.service.model.ReceiptWorkerIdentity;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -33,7 +32,9 @@ public class ReceiptWorkerConfiguration {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setCorePoolSize(properties.getConcurrency());
         executor.setMaxPoolSize(properties.getConcurrency());
-        executor.setQueueCapacity(0);
+        // 실행을 마친 스레드가 다음 Job을 즉시 보충할 때의 짧은 인계 공간이다.
+        // Semaphore가 실행 중 + 대기 중 작업 합계를 concurrency 이하로 제한한다.
+        executor.setQueueCapacity(properties.getConcurrency());
         executor.setThreadNamePrefix("receipt-extraction-");
         executor.setWaitForTasksToCompleteOnShutdown(false);
         executor.initialize();
@@ -46,9 +47,9 @@ public class ReceiptWorkerConfiguration {
      */
     private void validateTimeoutAndLease(ReceiptWorkerProperties workerProperties,
                                          ReceiptProperties receiptProperties) {
-        if (!"openai".equalsIgnoreCase(receiptProperties.extractor().provider())) return;
+        if (!"openai".equalsIgnoreCase(receiptProperties.getExtractor().getProvider())) return;
         if (workerProperties.getLeaseDuration()
-                .compareTo(receiptProperties.openai().responseTimeout()) <= 0) {
+                .compareTo(receiptProperties.getOpenai().getResponseTimeout()) <= 0) {
             throw new IllegalArgumentException(
                     "Worker Lease 기간은 OpenAI 응답 제한 시간보다 길어야 합니다.");
         }

@@ -11,11 +11,11 @@ import org.springframework.context.annotation.Configuration;
 public class ExtractorConfiguration {
     @Bean
     ReceiptExtractor receiptExtractor(ReceiptProperties properties, ObjectMapper objectMapper) {
-        return switch (properties.extractor().provider().toLowerCase()) {
+        return switch (properties.getExtractor().getProvider().toLowerCase()) {
             case "fake" -> new FakeReceiptExtractor();
-            case "openai" -> new OpenAiReceiptExtractor(properties.openai(), objectMapper);
+            case "openai" -> new OpenAiReceiptExtractor(properties.getOpenai(), objectMapper);
             default -> throw new IllegalArgumentException(
-                    "지원하지 않는 추출 공급자입니다: " + properties.extractor().provider());
+                    "지원하지 않는 추출 공급자입니다: " + properties.getExtractor().getProvider());
         };
     }
 }

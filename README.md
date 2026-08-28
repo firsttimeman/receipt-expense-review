@@ -18,7 +18,7 @@
 - MySQL 8.4 LTS, Flyway, MySQL 기반 내구성 작업 큐, Redis 7.2, Redisson
 - MySQL `RETRY_WAIT` 기반 고정 지연 내구성 재시도
 - OpenAI Responses API 또는 결정론적 Fake 추출기
-- Spring Boot Actuator, Micrometer, Prometheus registry
+- Spring Boot Actuator, Micrometer, Prometheus, Grafana, k6
 - JUnit 5, AssertJ, MockMvc, H2, Testcontainers MySQL
 - Docker Compose
 
@@ -39,6 +39,7 @@ com.example.receipt
 ├── quality         # 이미지 품질 검사
 ├── storage         # 비동기 처리를 위한 이미지 저장소 포트와 로컬 구현
 ├── concurrency     # 동일 이미지 동시 처리 잠금
+├── observability   # Micrometer 메트릭과 DB 기반 Job Gauge
 └── config          # 애플리케이션 설정
 ```
 
@@ -53,9 +54,10 @@ flowchart LR
     C --> D["202 Accepted"]
     C --> E["MySQL Worker 선점<br/>FOR UPDATE SKIP LOCKED"]
     E --> F["비동기 Processor<br/>Lease 기반 소유권 검증"]
-    F --> G["HTTP Timeout<br/>Fake 또는 OpenAI 구조화 추출"]
-    G --> H["결정론적 검증·경비 정책"]
-    H --> I["자동 처리 또는 사람 검수"]
+    F --> H["HTTP Timeout<br/>Fake 또는 OpenAI 구조화 추출"]
+    H --> K["최소 Counter·Gauge 기록"]
+    K --> L["결정론적 검증·경비 정책"]
+    L --> I["자동 처리 또는 사람 검수"]
     I --> J["필드 수정·승인·반려"]
 ```
 
@@ -93,9 +95,20 @@ flowchart LR
 - 동일 이미지를 다시 제출하면 새 레코드를 만들지 않고 기존 건을 `NEEDS_REVIEW`로 전환합니다.
 - `Idempotency-Key`가 같으면 기존 응답을 재사용합니다.
 - 업로드 경로에서 먼저 하나의 Job으로 수렴시키므로 동시 요청이 AI를 직접 중복 호출하지 않습니다. 정합성의 최종 방어선은 DB 제약조건입니다.
-- `(companyId, imageSha256)` 기반 Redisson 분산 락으로 동일 이미지 처리를 직렬화합니다.
-- Redis 락 획득 후 MySQL을 다시 조회하며, 최초 요청만 생성하고 후속 요청은 기존 영수증을 중복 처리합니다.
+- `(companyId, imageSha256)` 기반 Redisson 분산 락으로 새 이미지의 최초 생성을 직렬화합니다.
+- 최초 중복 처리가 끝난 후속 요청은 `duplicateDetected`를 확인해 Redis 락을 건너뛰고 기존 영수증을 반환합니다.
+- Redis 락 대기 시간이 초과돼도 MySQL에 중복 처리가 끝난 기존 행이 있으면 `409` 대신 그 결과로 수렴합니다.
 - Redis는 동시 실행을 제어하고 MySQL Unique Constraint는 최종 데이터 정합성을 보장합니다.
+- Redis 장애 시 업로드가 MySQL 경로에 도달하지 못할 수 있다는 한계는 5단계의 수용된 위험으로 기록했습니다. 현재 구현은 Redis 장애 폴백을 보장하지 않습니다.
+
+### 최소 운영 메트릭과 외부 부하 측정
+
+- AI 호출마다 DB 행을 추가하던 `ExtractionAttempt`는 저장 공간과 인덱스 비용을 줄이기 위해 제거했습니다. 개별 재시도와 최종 실패는 기존 감사 로그에서 확인합니다.
+- `ReceiptMetrics`는 성공·재시도·최종 실패·중복·중복 빠른 경로·Lease 복구 Counter만 기록합니다.
+- `receipt.jobs.unfinished` Gauge만 MySQL의 현재 미완료 Job 수를 조회합니다. Prometheus scrape 한 번에 추가 DB 조회는 한 번입니다.
+- 애플리케이션 내부 Histogram과 P50/P95/P99 계산은 제거하고, 실제 API 응답 지연은 필요할 때 실행하는 k6가 계산합니다.
+- Docker Prometheus는 `/actuator/prometheus`를 5초마다 수집해 최소 업무 지표와 Spring Boot 기본 HTTP·JVM·HikariCP 지표의 시간 변화를 보존합니다.
+- 영수증 ID, 회사 ID, Worker ID처럼 값 종류가 계속 늘어나는 정보는 메트릭 태그로 사용하지 않습니다.
 
 ### 검수 동시성
 
@@ -132,7 +145,7 @@ flowchart LR
 필수 조건은 JDK 17과 Docker입니다. 현재 구현은 Virtual Thread 등 Java 21 전용 기능을 사용하지 않으므로, Spring Boot 3.3이 지원하는 안정적인 LTS 기준선인 Java 17을 사용합니다.
 
 ```bash
-docker compose up -d mysql redis
+docker compose up -d --wait
 ./gradlew bootRun
 ```
 
@@ -203,12 +216,86 @@ curl -i -X POST http://localhost:8080/api/receipts \
 }
 ```
 
-### 조회 및 감사 로그
+### 조회와 감사 로그
 
 ```bash
 curl http://localhost:8080/api/receipts/{receiptId}
 curl http://localhost:8080/api/receipts/{receiptId}/audit-events
 ```
+
+### Prometheus 메트릭과 k6 부하 테스트
+
+```bash
+docker compose up -d --wait
+curl http://localhost:8080/actuator/prometheus
+docker compose run --rm -e PROFILE=smoke k6 run k6-duplicate-upload.js
+docker compose run --rm -e PROFILE=normal k6 run k6-duplicate-upload.js
+docker compose run --rm -e PROFILE=heavy k6 run k6-duplicate-upload.js
+docker compose run --rm -e PROFILE=stress k6 run k6-duplicate-upload.js
+docker compose run --rm -e PROFILE=spike k6 run k6-duplicate-upload.js
+```
+
+Prometheus UI는 `http://localhost:9090`에서 확인합니다. Docker 컨테이너는 호스트의 `http://host.docker.internal:8080/actuator/prometheus`를 5초마다 수집합니다. k6도 Compose의 `load` 프로필 서비스로 실행되므로 로컬에 k6를 별도로 설치할 필요가 없습니다. 프로필은 Smoke 5 VU, Normal 20 VU, Heavy 50 VU, Stress 100 VU, Spike 200 VU이며 모든 요청은 별도 대기 없이 반복됩니다.
+
+### Grafana 부하 대시보드
+
+Grafana 관리자 비밀번호는 저장소에 커밋하지 않고 Git에서 제외된 Docker secret으로 생성합니다.
+
+```bash
+mkdir -p runtime/secrets
+openssl rand -base64 -out runtime/secrets/grafana_admin_password 32
+chmod 600 runtime/secrets/grafana_admin_password
+docker compose --profile monitoring up -d --wait grafana
+```
+
+- URL: `http://localhost:3000/d/receipt-api-db-load/receipt-api-db-load`
+- 사용자: `admin`
+- 로컬 비밀번호 확인: `cat runtime/secrets/grafana_admin_password`
+
+Prometheus 데이터 소스와 `영수증 API · DB 부하` 대시보드는 자동 등록됩니다. 포트는 `127.0.0.1`에만 열리며 대시보드에는 업로드 처리량·평균 응답 시간·결과별 요청률·HikariCP 활성/유휴/대기 연결·커넥션 풀 사용률·미완료 추출 작업이 표시됩니다.
+
+주요 메트릭:
+
+- `receipt_upload_requests_total`, `receipt_upload_duplicates_total`, `receipt_upload_duplicate_fast_path_total`
+- `receipt_extraction_successes_total`, `receipt_extraction_retries_total`
+- `receipt_extraction_final_failures_total`, `receipt_jobs_recovered_total`
+- `receipt_jobs_unfinished`
+- Spring 기본 `http_server_requests_seconds`, `process_cpu_usage`, `hikaricp_connections_active`
+
+2026-08-26 로컬 측정 결과(JDK 17, MySQL 8.4, Redis 7.2, Prometheus 3.5, Fake 추출기, 65KB 합성 JPEG, MacBook Pro):
+
+```text
+시나리오: 동일 합성 이미지 중복 업로드
+Smoke  5 VU × 10초:  7,179건, 716.04 req/s, P95 20.31ms,  P99 31.88ms,  실패율 0%
+Normal 20 VU × 30초: 24,682건, 822.10 req/s, P95 92.08ms,  P99 162.45ms, 실패율 0%
+Heavy 50 VU × 60초: 48,103건, 800.86 req/s, P95 271.64ms, P99 451.76ms, 실패율 0%
+Stress 100 VU × 60초: 34,173건, 568.18 req/s, 평균 175.58ms, P95 398.08ms, P99 578.45ms, 실패율 0%
+Spike  200 VU × 30초: 17,368건, 573.60 req/s, 평균 346.45ms, P95 824.38ms, P99 1.21s, 실패율 0%
+
+다섯 프로필 누적: 131,505건
+Prometheus: 프로세스 CPU 최대 13.97%, 고부하 구간 CPU 최대 12.82%, HikariCP 활성 최대 1/10·대기 0, 미완료 Job 0
+DB 결과: Receipt 1건, ExtractionJob 1건, Job 상태 COMPLETED
+```
+
+이 값은 중복 이미지 경로의 로컬 기준값이며 실제 OpenAI 신규 추출 처리량을 의미하지 않습니다.
+
+100 VU에서 200 VU로 늘려도 처리량은 약 570 req/s에서 정체되고 P95는 약 2.1배 증가했습니다. CPU·DB 커넥션·Job 적체는 여유가 있어 동일 이미지 Redis 락 직렬화를 병목으로 판단했습니다. 8단계에서 최초 중복 처리가 끝난 요청은 Redis 락을 건너뛰는 빠른 반환 경로를 적용했습니다. 같은 200 VU × 30초 조건에서 처리량은 573.60에서 1,863.67 req/s로 3.25배 증가했고, P95는 824.38ms에서 242.90ms로 70.5% 감소했습니다. 실패율은 0%였으며 55,966건이 Receipt 1건, Job 1건, 중복 감사 이벤트 1건으로 수렴했습니다.
+
+서로 다른 합성 영수증 200건의 기준선은 최종 완료까지 51.237초가 걸렸습니다. Worker가 작업 완료 직후 빈 슬롯을 즉시 보충하도록 개선한 뒤 같은 조건에서 접수 처리량은 419.16에서 563.42 req/s로 증가했고 P95는 409.82ms에서 271.09ms로 감소했습니다. 전체 Job 완료 시간은 1.5757초로 96.9% 감소했습니다. 최종 결과는 Receipt·Job·`COMPLETED`·`AUTO_APPROVED` 각각 200건, 감사 이벤트 800건이며 실패·유실·중복은 없었습니다. 상세 전후 비교는 [PERFORMANCE_TEST_RESULTS.md](PERFORMANCE_TEST_RESULTS.md)에 기록했습니다.
+
+2026-08-26 Docker Compose k6 Heavy 재측정과 MySQL 부하 확인:
+
+```text
+50 VU × 60초: 38,782건, 645.63 req/s, 평균 77.29ms, P95 170.43ms, P99 257.52ms, 실패율 0%
+MySQL 컨테이너 CPU 최대 15.55%, 메모리 최대 489.9MiB
+Threads_running 최대 3, Threads_connected 11
+HikariCP 활성 연결 최대 1/10, 대기 연결 최대 0, 미완료 Job 최대 0
+Queries 증가 234,003건(HTTP 요청당 약 6.03건, Worker polling·측정 쿼리 포함)
+InnoDB 행 잠금 대기 0건, 행 잠금 대기 시간 0ms, Slow Query 0건
+Buffer Pool 논리 읽기 237,086건, 물리 읽기 증가 0건
+```
+
+현재 Grafana의 DB 그래프는 애플리케이션 관점의 HikariCP 부하를 보여줍니다. MySQL 내부 잠금·Slow Query를 상시 그래프로 수집하려면 별도 MySQL Exporter 계정과 최소 모니터링 권한을 추가해야 하므로 현재 범위에서는 보류했습니다.
 
 ### 검수 필드 수정
 
@@ -272,6 +359,7 @@ Fake 추출기는 파일 내용에 개인정보를 넣지 않고 파일명으로
 - 필수 필드·날짜·금액·경비 정책·상태 라우팅 단위 테스트
 - API 키 없는 OpenAI 어댑터 실패 안전 테스트
 - OpenAI 429·503·401·응답 Timeout을 `ExtractionException`으로 안전하게 감싸는 테스트
+- 최소 Micrometer Counter와 DB 기반 미완료 Job Gauge 테스트
 - 추출 실패 후 10초 뒤 재선점해 성공하는 고정 지연 재시도 테스트
 - 세 번 연속 추출 실패 시 Job `FAILED`, Receipt `MANUAL_ENTRY` 전환 테스트
 - MySQL `RETRY_WAIT` 재선점 후 성공 및 감사 이벤트 통합 테스트
@@ -295,15 +383,16 @@ Fake 추출기는 파일 내용에 개인정보를 넣지 않고 파일명으로
 
 ## 현재 범위와 다음 단계
 
-현재 구현은 핵심 정합성과 검수 흐름을 우선한 MVP이며 장애 대응 로드맵의 4단계까지 완료했습니다.
+현재 구현은 핵심 정합성과 검수 흐름을 우선한 MVP이며 장애 대응 로드맵의 6단계까지 진행했습니다. 5단계 Redis 장애 폴백은 수용된 위험으로 보류했습니다.
 
-- 업로드 접수와 외부 AI 처리를 분리하고, MySQL 다중 Worker 선점, Lease 기반 중단 작업 복구, 고정 지연 DB 재시도와 동시 호출 제한을 적용했습니다. 다음 단계는 Redis를 정합성 필수 경로에서 제거하는 작업입니다.
+- 업로드 접수와 외부 AI 처리를 분리하고, MySQL 다중 Worker 선점, Lease 기반 중단 작업 복구, 고정 지연 DB 재시도와 동시 호출 제한을 적용했습니다.
+- DB 시도 이력 대신 최소 Micrometer Counter·Gauge, Docker Prometheus와 k6 3단계 기준값을 추가했습니다.
 - 현재 Lease는 처리 중 자동 연장하지 않습니다. 대신 OpenAI 응답 Timeout이 Lease보다 짧도록 시작 시 검증합니다. 프로세스 정지나 GC pause처럼 Lease를 넘기는 상황에서는 외부 호출이 `at-least-once`가 될 수 있지만, `claimToken` 검증으로 오래된 결과의 DB 반영은 차단합니다.
 - 회사 정책은 설정 파일 기반입니다. 다중 회사 정책을 MySQL에서 관리하게 되면 Redis Cache-Aside, 정책 버전 키, 변경 이벤트 기반 무효화를 추가할 계획입니다.
 - 인증·권한은 아직 없습니다. 검수자 역할 기반 접근 제어가 필요합니다.
 - 흐림, 잘림, 반사광 검사는 아직 없습니다. OpenCV 도입 전에 평가 데이터와 임계값을 먼저 정의해야 합니다.
 - 로컬 이미지 저장 구현은 개발·장애 실험용입니다. 운영에서는 암호화된 객체 스토리지, 제한된 보존 기간, 접근 로그, 고아 파일 정리와 삭제 정책이 필요합니다.
-- Actuator와 Prometheus 레지스트리는 포함했으며, 다음 단계에서 자동 처리율·검수 전환율·재촬영률·처리 시간·모델 비용 지표를 추가합니다.
+- 성공·재시도·실패·중복·적체 메트릭은 구현했습니다. 처리 시간 P95/P99는 k6로 측정하며, 토큰·비용 영속화는 현재 규모에서 제외했습니다.
 
 캐시는 정합성 요구와 무효화 전략이 정의된 데이터에만 적용합니다. 변경이 잦은 영수증 상태를 무조건 캐싱하지 않고, 변경 빈도가 낮은 회사 정책과 사업자 조회 결과를 우선 대상으로 삼습니다.
 
@@ -311,4 +400,4 @@ Fake 추출기는 파일 내용에 개인정보를 넣지 않고 파일명으로
 
 기능, 버그 수정, DB 스키마, 동시성·보안 설계의 변경과 검증 결과는 [CHANGELOG.md](CHANGELOG.md)에 계속 누적합니다.
 
-외부 AI 장애, 중복 호출, 비동기 Worker 복구, 관측 가능성, 규칙 정확성과 정책 캐시의 단계별 고도화 계획은 [RESILIENCE_ROADMAP.md](RESILIENCE_ROADMAP.md)에 기록합니다.
+외부 AI 장애, 중복 호출, 비동기 Worker 복구와 관측 가능성의 단계별 고도화 계획은 [RESILIENCE_ROADMAP.md](RESILIENCE_ROADMAP.md)에 기록합니다.

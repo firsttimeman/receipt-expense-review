@@ -66,23 +66,22 @@ public class ReceiptPersistenceService {
 
         // Receipt, Job과 감사 이벤트에 동일한 중복 감지 시각을 기록한다.
         Instant now = Instant.now(clock);
+        ReceiptExtractionJob job = jobRepository.findByReceiptId(receiptId)
+                .orElseThrow(() -> new IllegalStateException("영수증 추출 작업을 찾을 수 없습니다."));
+
+        // Job의 duplicateDetected를 중복 처리 완료 여부의 단일 기준으로 사용한다.
+        // 이미 처리했다면 규칙 재계산, 버전 증가와 감사 로그 중복 생성을 모두 피한다.
+        if (job.duplicateDetected()) {
+            return receipt;
+        }
+        job.markDuplicate(now);
 
         // status가 null이면 접수는 끝났지만 AI 추출과 업무 상태 결정은 아직 끝나지 않은 상태다.
         if (receipt.status() == null) {
-            // 처리 전 중복 여부는 추출 데이터가 없는 Receipt가 아니라 해당 ExtractionJob에 보관한다.
-            ReceiptExtractionJob job = jobRepository.findByReceiptId(receiptId)
-                    .orElseThrow(() -> new IllegalStateException("영수증 추출 작업을 찾을 수 없습니다."));
-
-            // 같은 이미지가 여러 번 재전송되어도 중복 표시와 감사 로그는 최초 한 번만 반영한다.
-            if (!job.duplicateDetected()) {
-                // 나중에 Processor가 이 값을 검증 엔진에 전달할 수 있도록 중복 사실을 표시한다.
-                job.markDuplicate(now);
-
-                // 아직 업무 상태는 결정할 수 없으므로 상태 변경 없이 검증을 미뤘다는 사실을 기록한다.
-                auditRepository.save(new AuditEvent(receipt.id(), now, "system",
-                        AuditAction.DUPLICATE_DETECTED, null, null,
-                        Map.of("ruleCode", "DUPLICATE_SUBMISSION", "deferred", true)));
-            }
+            // 아직 업무 상태는 결정할 수 없으므로 상태 변경 없이 검증을 미뤘다는 사실을 기록한다.
+            auditRepository.save(new AuditEvent(receipt.id(), now, "system",
+                    AuditAction.DUPLICATE_DETECTED, null, null,
+                    Map.of("ruleCode", "DUPLICATE_SUBMISSION", "deferred", true)));
 
             // 두 번째 Receipt를 만들지 않고 최초 접수된 Receipt를 그대로 반환한다.
             return receipt;
@@ -93,7 +92,7 @@ public class ReceiptPersistenceService {
         boolean alreadyMarked = receipt.ruleResults().stream()
                 .anyMatch(result -> result.code().equals("DUPLICATE_SUBMISSION") && result.failed());
 
-        // 이미 중복 처리된 영수증이면 규칙 재계산, 버전 증가와 감사 로그 중복 생성을 피한다.
+        // 이전 버전에서 규칙만 반영하고 Job 표시를 남기지 않은 데이터도 안전하게 보정한다.
         if (alreadyMarked) {
             return receipt;
         }

@@ -6,7 +6,9 @@ import com.example.receipt.entity.AuditEvent;
 import com.example.receipt.entity.IdempotencyRecord;
 import com.example.receipt.entity.Receipt;
 import com.example.receipt.entity.ReceiptExtractionJob;
+import com.example.receipt.exception.ReceiptConflictException;
 import com.example.receipt.exception.ReceiptNotFoundException;
+import com.example.receipt.observability.ReceiptMetrics;
 import com.example.receipt.repository.IdempotencyRecordRepository;
 import com.example.receipt.repository.ReceiptExtractionJobRepository;
 import com.example.receipt.repository.ReceiptRepository;
@@ -37,9 +39,22 @@ public class ReceiptUploadService {
     private final DuplicateReceiptLock duplicateReceiptLock;
     private final ReceiptImageStorage imageStorage;
     private final Clock clock;
+    private final ReceiptMetrics metrics;
 
     public UploadResult upload(String companyId, String idempotencyKey, String fileName,
                                String contentType, byte[] bytes) {
+        try {
+            UploadResult result = doUpload(companyId, idempotencyKey, fileName, contentType, bytes);
+            metrics.recordUpload(uploadOutcome(result));
+            return result;
+        } catch (RuntimeException exception) {
+            metrics.recordUpload("error");
+            throw exception;
+        }
+    }
+
+    private UploadResult doUpload(String companyId, String idempotencyKey, String fileName,
+                                  String contentType, byte[] bytes) {
         if (bytes == null || bytes.length == 0) {
             throw new IllegalArgumentException("업로드 파일은 비어 있을 수 없습니다.");
         }
@@ -48,8 +63,26 @@ public class ReceiptUploadService {
         if (replay.isPresent()) return replay.get();
 
         String imageSha256 = sha256(bytes);
-        return duplicateReceiptLock.execute(companyId, imageSha256,
-                () -> acceptWhileLocked(companyId, normalizedKey, fileName, contentType, bytes, imageSha256));
+        Optional<UploadResult> processedDuplicate = findProcessedDuplicate(companyId, imageSha256);
+        if (processedDuplicate.isPresent()) {
+            metrics.recordDuplicateFastPath();
+            return processedDuplicate.get();
+        }
+
+        try {
+            return duplicateReceiptLock.execute(companyId, imageSha256,
+                    () -> acceptWhileLocked(companyId, normalizedKey, fileName,
+                            contentType, bytes, imageSha256));
+        } catch (ReceiptConflictException exception) {
+            // 락 대기 중 다른 요청이 DB 생성을 끝냈다면 충돌 응답 대신 그 결과로 수렴한다.
+            return findProcessedDuplicate(companyId, imageSha256)
+                    .orElseThrow(() -> exception);
+        }
+    }
+
+    private String uploadOutcome(UploadResult result) {
+        if (result.created()) return "created";
+        return result.idempotentReplay() ? "idempotent_replay" : "duplicate";
     }
 
     private UploadResult acceptWhileLocked(String companyId, String idempotencyKey, String fileName,
@@ -97,9 +130,25 @@ public class ReceiptUploadService {
                 .map(receiptId -> existingResult(findReceipt(receiptId), true));
     }
 
+    /**
+     * 최초 중복 감지가 이미 감사 로그와 규칙에 반영된 영수증은 Redis 락을 다시 기다릴 이유가 없다.
+     * 아직 중복 표시가 없으면 기존 락 경로에서 한 번만 markDuplicate를 실행한다.
+     */
+    private Optional<UploadResult> findProcessedDuplicate(String companyId, String imageSha256) {
+        return receiptRepository.findByCompanyIdAndImageSha256(companyId, imageSha256)
+                .flatMap(receipt -> jobRepository.findByReceiptId(receipt.id())
+                        .filter(ReceiptExtractionJob::duplicateDetected)
+                        .map(job -> existingResult(receipt, job, false)));
+    }
+
     private UploadResult existingResult(Receipt receipt, boolean idempotentReplay) {
         ReceiptExtractionJob job = jobRepository.findByReceiptId(receipt.id())
                 .orElseThrow(() -> new IllegalStateException("영수증 추출 작업을 찾을 수 없습니다."));
+        return existingResult(receipt, job, idempotentReplay);
+    }
+
+    private UploadResult existingResult(Receipt receipt, ReceiptExtractionJob job,
+                                        boolean idempotentReplay) {
         return new UploadResult(receipt, job, false, idempotentReplay);
     }
 

@@ -27,10 +27,10 @@ public class ImageQualityInspector {
             }
             int width = image.getWidth();
             int height = image.getHeight();
-            if (width < properties.quality().minWidth() || height < properties.quality().minHeight()) {
+            if (width < properties.getQuality().getMinWidth() || height < properties.getQuality().getMinHeight()) {
                 return new ImageQualityResult(ImageQualityStatus.NEEDS_RECAPTURE, width, height,
                         "최소 해상도 %dx%d를 충족하지 않습니다."
-                                .formatted(properties.quality().minWidth(), properties.quality().minHeight()));
+                                .formatted(properties.getQuality().getMinWidth(), properties.getQuality().getMinHeight()));
             }
             return new ImageQualityResult(ImageQualityStatus.ACCEPTABLE, width, height, "기본 품질 검사를 통과했습니다.");
         } catch (IOException exception) {

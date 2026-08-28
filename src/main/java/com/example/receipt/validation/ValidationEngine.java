@@ -94,13 +94,13 @@ public class ValidationEngine {
         if (amount == null) {
             return notApplicable("POLICY_AMOUNT_LIMIT", "총액이 없어 한도를 검사하지 않았습니다.");
         }
-        return amount.compareTo(properties.policy().maxAmount()) > 0
+        return amount.compareTo(properties.getPolicy().getMaxAmount()) > 0
                 ? fail("POLICY_AMOUNT_LIMIT", "회사 경비 한도를 초과했습니다.")
                 : pass("POLICY_AMOUNT_LIMIT", "회사 경비 한도 이내입니다.");
     }
 
     private RuleResult weekendRule(LocalDate date) {
-        if (!properties.policy().weekendRequiresReview() || date == null) {
+        if (!properties.getPolicy().isWeekendRequiresReview() || date == null) {
             return notApplicable("POLICY_WEEKEND", "주말 검사를 적용하지 않았습니다.");
         }
         boolean weekend = date.getDayOfWeek() == DayOfWeek.SATURDAY || date.getDayOfWeek() == DayOfWeek.SUNDAY;
@@ -113,7 +113,7 @@ public class ValidationEngine {
         if (merchant == null) {
             return notApplicable("POLICY_PROHIBITED_MERCHANT", "상호가 없어 금지 업종을 검사하지 않았습니다.");
         }
-        boolean prohibited = properties.policy().prohibitedMerchantKeywords().stream().anyMatch(merchant::contains);
+        boolean prohibited = properties.getPolicy().getProhibitedMerchantKeywords().stream().anyMatch(merchant::contains);
         return prohibited
                 ? fail("POLICY_PROHIBITED_MERCHANT", "금지 업종 키워드가 포함되어 있습니다.")
                 : pass("POLICY_PROHIBITED_MERCHANT", "금지 업종 키워드가 없습니다.");

@@ -87,6 +87,7 @@ class OpenAiReceiptExtractorTest {
             try {
                 if (!delay.isZero()) Thread.sleep(delay.toMillis());
                 byte[] bytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "application/json");
                 exchange.sendResponseHeaders(status, bytes.length);
                 exchange.getResponseBody().write(bytes);
             } catch (InterruptedException exception) {

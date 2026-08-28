@@ -1,5 +1,8 @@
 package com.example.receipt.extraction;
 
+import com.example.receipt.concurrency.CountingDuplicateReceiptLock;
+import com.example.receipt.concurrency.InMemoryDuplicateReceiptLock;
+import com.example.receipt.domain.AuditAction;
 import com.example.receipt.repository.AuditEventRepository;
 import com.example.receipt.repository.IdempotencyRecordRepository;
 import com.example.receipt.repository.ReceiptRepository;
@@ -48,6 +51,7 @@ class ConcurrentExtractionCharacterizationTest {
     @Autowired AuditEventRepository auditRepository;
     @Autowired IdempotencyRecordRepository idempotencyRepository;
     @Autowired CountingReceiptExtractor countingExtractor;
+    @Autowired CountingDuplicateReceiptLock countingDuplicateReceiptLock;
     @Autowired ReceiptExtractionProcessor extractionProcessor;
     @Autowired ReceiptJobClaimService claimService;
 
@@ -58,6 +62,56 @@ class ConcurrentExtractionCharacterizationTest {
         jobRepository.deleteAll();
         receiptRepository.deleteAll();
         countingExtractor.reset();
+        countingDuplicateReceiptLock.reset();
+    }
+
+    @Test
+    void processedDuplicateUploadsBypassLockAndKeepOneAuditEvent() throws Exception {
+        byte[] image = png(800, 1200);
+        UploadResult first = uploadService.upload(
+                "fast-path-company", null, "first.png", "image/png", image);
+        ClaimedReceiptJob claimedJob = claimService.claimAvailable(
+                "fast-path-worker", 1, Duration.ofSeconds(30)).get(0);
+        extractionProcessor.process(claimedJob);
+
+        // 최초 중복 한 건은 락 안에서 규칙과 감사 로그를 한 번 반영한다.
+        uploadService.upload("fast-path-company", null, "duplicate.png", "image/png", image);
+        countingDuplicateReceiptLock.reset();
+
+        ExecutorService executor = Executors.newFixedThreadPool(CONCURRENT_REQUESTS);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            List<Future<UploadResult>> futures = java.util.stream.IntStream.range(0, CONCURRENT_REQUESTS)
+                    .mapToObj(index -> executor.submit(() -> {
+                        start.await();
+                        return uploadService.upload("fast-path-company", null,
+                                "duplicate-" + index + ".png", "image/png", image);
+                    }))
+                    .toList();
+
+            start.countDown();
+            Set<Long> receiptIds = new HashSet<>();
+            for (Future<UploadResult> future : futures) {
+                receiptIds.add(future.get(30, TimeUnit.SECONDS).receipt().id());
+            }
+
+            long duplicateAuditEvents = auditRepository
+                    .findByReceiptIdOrderByOccurredAtAsc(first.receipt().id()).stream()
+                    .filter(event -> event.action() == AuditAction.DUPLICATE_DETECTED)
+                    .count();
+
+            assertThat(receiptIds).containsExactly(first.receipt().id());
+            assertThat(receiptRepository.count()).isOne();
+            assertThat(jobRepository.count()).isOne();
+            assertThat(countingDuplicateReceiptLock.invocationCount())
+                    .as("최초 중복 처리가 끝난 동일 이미지는 Redis 락을 다시 획득하지 않는다")
+                    .isZero();
+            assertThat(duplicateAuditEvents)
+                    .as("중복 감지 감사 이벤트는 최초 한 번만 기록한다")
+                    .isOne();
+        } finally {
+            executor.shutdownNow();
+        }
     }
 
     @Test
@@ -134,6 +188,12 @@ class ConcurrentExtractionCharacterizationTest {
         @Primary
         CountingReceiptExtractor countingReceiptExtractor() {
             return new CountingReceiptExtractor(new FakeReceiptExtractor());
+        }
+
+        @Bean
+        @Primary
+        CountingDuplicateReceiptLock countingDuplicateReceiptLock(InMemoryDuplicateReceiptLock delegate) {
+            return new CountingDuplicateReceiptLock(delegate);
         }
     }
 }

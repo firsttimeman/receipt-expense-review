@@ -8,6 +8,8 @@ import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.ApplicationListener;
+import org.springframework.context.event.ContextClosedEvent;
 import org.springframework.core.task.TaskRejectedException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -19,7 +21,7 @@ import java.util.concurrent.Semaphore;
 @Slf4j
 @Component
 @ConditionalOnProperty(prefix = "receipt.worker", name = "enabled", havingValue = "true", matchIfMissing = true)
-public class ReceiptExtractionWorker {
+public class ReceiptExtractionWorker implements ApplicationListener<ContextClosedEvent> {
     private final ReceiptJobClaimService claimService;
     private final ExpiredJobRecoveryService recoveryService;
     private final ReceiptExtractionProcessor processor;
@@ -49,8 +51,13 @@ public class ReceiptExtractionWorker {
     public synchronized void poll() {
         if (!running) return;
         recoveryService.recoverExpired(properties.getBatchSize());
+        dispatch(properties.getBatchSize());
+    }
 
-        int reserved = reserveCapacity();
+    /** 빈 처리 슬롯 범위에서 Job을 선점하고 Executor에 전달한다. */
+    private synchronized void dispatch(int requestedJobs) {
+        if (!running) return;
+        int reserved = reserveCapacity(requestedJobs);
         if (reserved == 0) return;
 
         List<ClaimedReceiptJob> claimedJobs;
@@ -68,14 +75,20 @@ public class ReceiptExtractionWorker {
         }
     }
 
-    /** 컨텍스트 종료가 시작되면 진행 중인 짧은 polling을 마친 뒤 신규 DB 선점을 중단한다. */
+    /** 컨텍스트 종료 이벤트는 DataSource 파괴보다 먼저 오므로 신규 DB polling을 즉시 차단한다. */
+    @Override
+    public void onApplicationEvent(ContextClosedEvent event) {
+        running = false;
+    }
+
+    /** 이벤트를 받지 못하는 특수한 종료 경로에서도 마지막 방어선으로 polling을 중단한다. */
     @PreDestroy
     public synchronized void stopPolling() {
         running = false;
     }
 
-    private int reserveCapacity() {
-        int limit = Math.min(properties.getBatchSize(), capacity.availablePermits());
+    private int reserveCapacity(int requestedJobs) {
+        int limit = Math.min(requestedJobs, capacity.availablePermits());
         int reserved = 0;
         while (reserved < limit && capacity.tryAcquire()) reserved++;
         return reserved;
@@ -102,6 +115,13 @@ public class ReceiptExtractionWorker {
                     claimedJob.jobId(), exception);
         } finally {
             capacity.release();
+            // 고정 polling 주기를 기다리지 않고 방금 빈 슬롯에 다음 Job 한 건을 즉시 보충한다.
+            try {
+                dispatch(1);
+            } catch (RuntimeException exception) {
+                // 이미 끝난 Job 결과에는 영향을 주지 않고 다음 정기 polling에서 다시 시도한다.
+                log.warn("빈 Worker 슬롯을 즉시 보충하지 못했습니다. 다음 polling에서 재시도합니다.", exception);
+            }
         }
     }
 }

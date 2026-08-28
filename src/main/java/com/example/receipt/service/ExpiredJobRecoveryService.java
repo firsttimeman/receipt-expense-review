@@ -5,6 +5,7 @@ import com.example.receipt.entity.AuditEvent;
 import com.example.receipt.entity.ReceiptExtractionJob;
 import com.example.receipt.repository.AuditEventRepository;
 import com.example.receipt.repository.ReceiptExtractionJobRepository;
+import com.example.receipt.observability.ReceiptMetrics;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,6 +22,7 @@ public class ExpiredJobRecoveryService {
     private final ReceiptExtractionJobRepository jobRepository;
     private final AuditEventRepository auditRepository;
     private final Clock clock;
+    private final ReceiptMetrics metrics;
 
     @Transactional
     public int recoverExpired(int batchSize) {
@@ -34,6 +36,7 @@ public class ExpiredJobRecoveryService {
             auditRepository.save(new AuditEvent(job.receiptId(), now, "system",
                     AuditAction.EXTRACTION_JOB_RECOVERED, null, null, details));
         }
+        metrics.recordRecoveredJobs(expiredJobs.size());
         return expiredJobs.size();
     }
 

@@ -1,68 +1,101 @@
 package com.example.receipt.config;
 
+import lombok.Getter;
+import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.List;
 
+@Getter
+@Setter
 @ConfigurationProperties(prefix = "receipt")
-public record ReceiptProperties(
-        Extractor extractor,
-        Quality quality,
-        Policy policy,
-        OpenAi openai
-) {
-    public ReceiptProperties {
-        extractor = extractor == null ? new Extractor("fake") : extractor;
-        quality = quality == null ? new Quality(600, 600) : quality;
-        policy = policy == null
-                ? new Policy(new BigDecimal("300000"), true, List.of("유흥", "카지노", "성인"))
-                : policy;
-        openai = openai == null
-                ? new OpenAi("", "gpt-5.4-mini", "https://api.openai.com",
-                Duration.ofSeconds(3), Duration.ofSeconds(30))
-                : openai;
+public class ReceiptProperties {
+    private Extractor extractor = new Extractor();
+    private Quality quality = new Quality();
+    private Policy policy = new Policy();
+    private OpenAi openai = new OpenAi();
+
+    public ReceiptProperties() {
     }
 
-    public record Extractor(String provider) {
-        public Extractor {
-            provider = provider == null || provider.isBlank() ? "fake" : provider;
+    public ReceiptProperties(Extractor extractor, Quality quality, Policy policy, OpenAi openai) {
+        this.extractor = extractor;
+        this.quality = quality;
+        this.policy = policy;
+        this.openai = openai;
+    }
+
+    @Getter
+    @Setter
+    public static class Extractor {
+        private String provider = "fake";
+
+        public Extractor() {
+        }
+
+        public Extractor(String provider) {
+            this.provider = provider;
         }
     }
 
-    public record Quality(int minWidth, int minHeight) {
-    }
+    @Getter
+    @Setter
+    public static class Quality {
+        private int minWidth = 600;
+        private int minHeight = 600;
 
-    public record Policy(
-            BigDecimal maxAmount,
-            boolean weekendRequiresReview,
-            List<String> prohibitedMerchantKeywords
-    ) {
-        public Policy {
-            maxAmount = maxAmount == null ? new BigDecimal("300000") : maxAmount;
-            prohibitedMerchantKeywords = prohibitedMerchantKeywords == null
-                    ? List.of()
-                    : List.copyOf(prohibitedMerchantKeywords);
+        public Quality() {
+        }
+
+        public Quality(int minWidth, int minHeight) {
+            this.minWidth = minWidth;
+            this.minHeight = minHeight;
         }
     }
 
-    public record OpenAi(String apiKey, String model, String baseUrl,
-                         Duration connectTimeout, Duration responseTimeout) {
+    @Getter
+    @Setter
+    public static class Policy {
+        private BigDecimal maxAmount = new BigDecimal("300000");
+        private boolean weekendRequiresReview = true;
+        private List<String> prohibitedMerchantKeywords = List.of("유흥", "카지노", "성인");
+
+        public Policy() {
+        }
+
+        public Policy(BigDecimal maxAmount, boolean weekendRequiresReview,
+                      List<String> prohibitedMerchantKeywords) {
+            this.maxAmount = maxAmount;
+            this.weekendRequiresReview = weekendRequiresReview;
+            this.prohibitedMerchantKeywords = prohibitedMerchantKeywords;
+        }
+    }
+
+    @Getter
+    @Setter
+    public static class OpenAi {
+        private String apiKey = "";
+        private String model = "gpt-5.4-mini";
+        private String baseUrl = "https://api.openai.com";
+        private Duration connectTimeout = Duration.ofSeconds(3);
+        private Duration responseTimeout = Duration.ofSeconds(30);
+
+        public OpenAi() {
+        }
+
         public OpenAi(String apiKey, String model, String baseUrl) {
             this(apiKey, model, baseUrl, Duration.ofSeconds(3), Duration.ofSeconds(30));
         }
 
-        public OpenAi {
-            apiKey = apiKey == null ? "" : apiKey;
-            model = model == null || model.isBlank() ? "gpt-5.4-mini" : model;
-            baseUrl = baseUrl == null || baseUrl.isBlank() ? "https://api.openai.com" : baseUrl;
-            connectTimeout = positiveOrDefault(connectTimeout, Duration.ofSeconds(3));
-            responseTimeout = positiveOrDefault(responseTimeout, Duration.ofSeconds(30));
-        }
-
-        private static Duration positiveOrDefault(Duration value, Duration fallback) {
-            return value == null || value.isZero() || value.isNegative() ? fallback : value;
+        public OpenAi(String apiKey, String model, String baseUrl,
+                      Duration connectTimeout, Duration responseTimeout) {
+            this.apiKey = apiKey;
+            this.model = model;
+            this.baseUrl = baseUrl;
+            this.connectTimeout = connectTimeout;
+            this.responseTimeout = responseTimeout;
         }
     }
 }

@@ -1,0 +1,154 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "sum(rate(receipt_upload_requests_total[1m]))", "legendFormat": "upload", "refId": "A"}],
+      "title": "업로드 처리량",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ms"}, "overrides": []},
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
+      "id": 2,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "1000 * sum(rate(http_server_requests_seconds_sum{uri=\"/api/receipts\"}[1m])) / clamp_min(sum(rate(http_server_requests_seconds_count{uri=\"/api/receipts\"}[1m])), 0.001)", "legendFormat": "average", "refId": "A"}],
+      "title": "업로드 평균 응답 시간",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"max": 100, "min": 0, "unit": "percent"}, "overrides": []},
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
+      "id": 3,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "100 * max(hikaricp_connections_active) / clamp_min(max(hikaricp_connections_max), 1)", "legendFormat": "pool", "refId": "A"}],
+      "title": "DB 커넥션 풀 사용률",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"decimals": 0, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
+      "id": 4,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "max(receipt_jobs_unfinished)", "legendFormat": "jobs", "refId": "A"}],
+      "title": "미완료 추출 작업",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
+      "id": 5,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"expr": "sum by (outcome) (rate(receipt_upload_requests_total[1m]))", "legendFormat": "{{outcome}}", "refId": "A"},
+        {"expr": "sum(rate(receipt_upload_duplicate_fast_path_total[1m]))", "legendFormat": "duplicate fast path", "refId": "B"}
+      ],
+      "title": "결과별 업로드 요청률",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ms"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
+      "id": 6,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "1000 * sum(rate(http_server_requests_seconds_sum{uri=\"/api/receipts\"}[1m])) / clamp_min(sum(rate(http_server_requests_seconds_count{uri=\"/api/receipts\"}[1m])), 0.001)", "legendFormat": "average", "refId": "A"}],
+      "title": "업로드 평균 응답 시간 추이",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"decimals": 0, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 13},
+      "id": 7,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"expr": "max(hikaricp_connections_active)", "legendFormat": "active", "refId": "A"},
+        {"expr": "max(hikaricp_connections_idle)", "legendFormat": "idle", "refId": "B"},
+        {"expr": "max(hikaricp_connections_pending)", "legendFormat": "pending", "refId": "C"}
+      ],
+      "title": "HikariCP 연결 상태",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "percent"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 13},
+      "id": 8,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"expr": "100 * max(hikaricp_connections_active) / clamp_min(max(hikaricp_connections_max), 1)", "legendFormat": "pool utilization", "refId": "A"},
+        {"expr": "100 * process_cpu_usage", "legendFormat": "application CPU", "refId": "B"}
+      ],
+      "title": "DB 풀 사용률과 애플리케이션 CPU",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "2026-08-26 동일 이미지 200 VU × 30초 고정 측정값",
+      "fieldConfig": {"defaults": {"decimals": 2, "unit": "reqps"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 21},
+      "id": 9,
+      "options": {"displayMode": "gradient", "minVizHeight": 10, "minVizWidth": 0, "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "showUnfilled": true, "valueMode": "color"},
+      "targets": [
+        {"expr": "vector(573.60)", "legendFormat": "개선 전", "refId": "A"},
+        {"expr": "vector(1863.67)", "legendFormat": "개선 후", "refId": "B"}
+      ],
+      "title": "Stage 8 · 동일 이미지 처리량",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "2026-08-26 동일 이미지 200 VU × 30초 고정 측정값",
+      "fieldConfig": {"defaults": {"decimals": 2, "unit": "ms"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 21},
+      "id": 10,
+      "options": {"displayMode": "gradient", "minVizHeight": 10, "minVizWidth": 0, "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "showUnfilled": true, "valueMode": "color"},
+      "targets": [
+        {"expr": "vector(824.38)", "legendFormat": "개선 전", "refId": "A"},
+        {"expr": "vector(242.90)", "legendFormat": "개선 후", "refId": "B"}
+      ],
+      "title": "Stage 8 · 동일 이미지 P95",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "2026-08-26 고유 이미지 200건의 최초 생성부터 최종 완료까지 고정 측정값",
+      "fieldConfig": {"defaults": {"decimals": 3, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 21},
+      "id": 11,
+      "options": {"displayMode": "gradient", "minVizHeight": 10, "minVizWidth": 0, "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "showUnfilled": true, "valueMode": "color"},
+      "targets": [
+        {"expr": "vector(51.237)", "legendFormat": "개선 전", "refId": "A"},
+        {"expr": "vector(1.5757)", "legendFormat": "개선 후", "refId": "B"}
+      ],
+      "title": "Stage 8 · 200 Job 완료 시간",
+      "type": "bargauge"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 41,
+  "tags": ["receipt", "load-test", "database"],
+  "templating": {"list": []},
+  "time": {"from": "now-15m", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "영수증 API · DB 부하",
+  "uid": "receipt-api-db-load",
+  "version": 2,
+  "weekStart": ""
+}
