@@ -48,12 +48,30 @@ class ReceiptApiIntegrationTest {
     @Autowired AuditEventRepository auditRepository;
     @Autowired IdempotencyRecordRepository idempotencyRepository;
 
+    @Autowired org.springframework.web.context.WebApplicationContext context;
+    @Autowired com.example.receipt.domain.employee.repository.EmployeeRepository employees;
+    @Autowired org.springframework.security.crypto.password.PasswordEncoder encoder;
+
     @BeforeEach
-    void cleanDatabase() {
+    void cleanDatabase() throws Exception {
         auditRepository.deleteAll();
         idempotencyRepository.deleteAll();
         jobRepository.deleteAll();
         receiptRepository.deleteAll();
+        employees.deleteAll();
+        var reviewer = new com.example.receipt.domain.employee.entity.Employee("regression-reviewer", "회귀 테스트 검토자",
+                com.example.receipt.domain.employee.model.EmployeeRole.REVIEWER);
+        reviewer.setPassword(encoder.encode("regression-password-123"));
+        employees.saveAndFlush(reviewer);
+        var session = (org.springframework.mock.web.MockHttpSession) mockMvc.perform(post("/api/auth/login")
+                .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf())
+                .param("loginId", reviewer.loginId()).param("password", "regression-password-123"))
+                .andExpect(status().isNoContent()).andReturn().getRequest().getSession(false);
+        mockMvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.webAppContextSetup(context)
+                .apply(org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity())
+                .defaultRequest(get("/").session(session)
+                    .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf()))
+                .build();
     }
 
     @Test
@@ -178,7 +196,7 @@ class ReceiptApiIntegrationTest {
                     .mapToObj(index -> executor.submit(() -> {
                         start.await();
                         return uploadService.upload("company-concurrent", null, "receipt-" + index + ".png",
-                                "image/png", image);
+                                "image/png", image, null);
                     })).toList();
             start.countDown();
             Set<Object> ids = new java.util.HashSet<>();

@@ -94,7 +94,7 @@ class MySqlSchemaIntegrationTest {
                     .mapToObj(index -> executor.submit(() -> {
                         start.await();
                         return uploadService.upload("mysql-company", null, "receipt-" + index + ".png",
-                                "image/png", image);
+                                "image/png", image, null);
                     })).toList();
             start.countDown();
             Set<Object> ids = new HashSet<>();
@@ -113,7 +113,7 @@ class MySqlSchemaIntegrationTest {
     void twoWorkersDistributeJobsWithoutOverlappingOnMySqlSkipLocked() throws Exception {
         for (int index = 0; index < 6; index++) {
             uploadService.upload("mysql-worker-company", null, "receipt-" + index + ".png",
-                    "image/png", pngWithMarker(800, 1200, index));
+                    "image/png", pngWithMarker(800, 1200, index), null);
         }
 
         ExecutorService executor = Executors.newFixedThreadPool(2);
@@ -159,7 +159,7 @@ class MySqlSchemaIntegrationTest {
     @Test
     void expiredLeaseIsRecoveredAndStaleWorkerCannotComplete() throws Exception {
         UploadResult uploaded = uploadService.upload("mysql-recovery-company", null,
-                "recover.png", "image/png", pngWithMarker(800, 1200, 99));
+                "recover.png", "image/png", pngWithMarker(800, 1200, 99), null);
 
         ClaimedReceiptJob staleClaim = claimService.claimAvailable(
                 "stale-worker", 1, Duration.ofMillis(5)).get(0);

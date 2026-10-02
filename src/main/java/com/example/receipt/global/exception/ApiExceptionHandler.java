@@ -5,6 +5,7 @@ import com.example.receipt.domain.receipt.exception.ReceiptNotFoundException;
 import jakarta.validation.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.*;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -24,9 +25,9 @@ public class ApiExceptionHandler {
     }
 
     @ExceptionHandler({IllegalArgumentException.class, ConstraintViolationException.class,
-            MethodArgumentNotValidException.class})
+            MethodArgumentNotValidException.class, HttpMessageNotReadableException.class})
     ProblemDetail badRequest(Exception exception) {
-        return problem(HttpStatus.BAD_REQUEST, exception.getMessage());
+        return problem(HttpStatus.BAD_REQUEST, "요청 값이 올바르지 않습니다.");
     }
 
     @ExceptionHandler(MaxUploadSizeExceededException.class)

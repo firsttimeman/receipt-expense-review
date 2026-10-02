@@ -70,13 +70,13 @@ class ConcurrentExtractionCharacterizationTest {
     void processedDuplicateUploadsBypassLockAndKeepOneAuditEvent() throws Exception {
         byte[] image = png(800, 1200);
         UploadResult first = uploadService.upload(
-                "fast-path-company", null, "first.png", "image/png", image);
+                "fast-path-company", null, "first.png", "image/png", image, null);
         ClaimedReceiptJob claimedJob = claimService.claimAvailable(
                 "fast-path-worker", 1, Duration.ofSeconds(30)).get(0);
         extractionProcessor.process(claimedJob);
 
         // 최초 중복 한 건은 락 안에서 규칙과 감사 로그를 한 번 반영한다.
-        uploadService.upload("fast-path-company", null, "duplicate.png", "image/png", image);
+        uploadService.upload("fast-path-company", null, "duplicate.png", "image/png", image, null);
         countingDuplicateReceiptLock.reset();
 
         ExecutorService executor = Executors.newFixedThreadPool(CONCURRENT_REQUESTS);
@@ -86,7 +86,7 @@ class ConcurrentExtractionCharacterizationTest {
                     .mapToObj(index -> executor.submit(() -> {
                         start.await();
                         return uploadService.upload("fast-path-company", null,
-                                "duplicate-" + index + ".png", "image/png", image);
+                                "duplicate-" + index + ".png", "image/png", image, null);
                     }))
                     .toList();
 
@@ -132,7 +132,7 @@ class ConcurrentExtractionCharacterizationTest {
                                 "receipt-" + index + ".png",
                                 "image/png",
                                 image
-                        );
+                        , null);
                     }))
                     .toList();
 

@@ -28,6 +28,7 @@ import java.util.List;
 @Validated
 @RequiredArgsConstructor
 public class ReceiptController {
+    private final com.example.receipt.domain.employee.service.CurrentEmployee current;
     private final ReceiptUploadService uploadService;
     private final ReceiptQueryService queryService;
     private final ReceiptCommandService commandService;
@@ -37,13 +38,11 @@ public class ReceiptController {
      */
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<ReceiptAcceptedResponse> upload(
-            @RequestHeader("X-Company-Id")
-            @NotBlank @Pattern(regexp = "[A-Za-z0-9_-]{1,64}") String companyId,
             @RequestHeader(value = "Idempotency-Key", required = false)
             @Size(max = 100) String idempotencyKey,
             @RequestPart("file") MultipartFile file) throws IOException {
-        UploadResult result = uploadService.upload(companyId, idempotencyKey, file.getOriginalFilename(),
-                file.getContentType(), file.getBytes());
+        UploadResult result = uploadService.upload("internal", idempotencyKey, file.getOriginalFilename(),
+                file.getContentType(), file.getBytes(), current.require().id());
         ReceiptAcceptedResponse body = ReceiptAcceptedResponse.from(result);
         if (result.created()) {
             return ResponseEntity.accepted()
@@ -67,13 +66,13 @@ public class ReceiptController {
 
     @PatchMapping("/{id}/fields")
     public ReceiptResponse correctFields(@PathVariable Long id, @Valid @RequestBody CorrectFieldsRequest request) {
-        return ReceiptResponse.from(commandService.correctFields(id, request.version(), request.reviewerId(),
+        return ReceiptResponse.from(commandService.correctFields(id, request.version(),
                 request.toCorrections()), queryService.getJob(id).status());
     }
 
     @PostMapping("/{id}/decision")
     public ReceiptResponse decide(@PathVariable Long id, @Valid @RequestBody ReviewDecisionRequest request) {
-        return ReceiptResponse.from(commandService.decide(id, request.version(), request.reviewerId(),
+        return ReceiptResponse.from(commandService.decide(id, request.version(),
                 request.decision(), request.note()), queryService.getJob(id).status());
     }
 }

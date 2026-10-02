@@ -67,7 +67,7 @@ class WorkerAutomationIntegrationTest {
     @Test
     void scheduledWorkerAutomaticallyProcessesQueuedJobExactlyOnce() throws Exception {
         UploadResult uploaded = uploadService.upload("worker-company", null,
-                "receipt.png", "image/png", png(800, 1200));
+                "receipt.png", "image/png", png(800, 1200), null);
 
         assertThat(uploaded.job().status()).isEqualTo(ExtractionJobStatus.QUEUED);
         awaitCompleted(uploaded.receipt().id(), Duration.ofSeconds(5));
@@ -82,9 +82,9 @@ class WorkerAutomationIntegrationTest {
     @Test
     void bulkheadLimitsExternalExtractionToConfiguredConcurrency() throws Exception {
         UploadResult first = uploadService.upload("worker-company", null,
-                "receipt-1.png", "image/png", png(800, 1200, Color.WHITE));
+                "receipt-1.png", "image/png", png(800, 1200, Color.WHITE), null);
         UploadResult second = uploadService.upload("worker-company", null,
-                "receipt-2.png", "image/png", png(800, 1200, Color.LIGHT_GRAY));
+                "receipt-2.png", "image/png", png(800, 1200, Color.LIGHT_GRAY), null);
 
         awaitCompleted(first.receipt().id(), Duration.ofSeconds(5));
         awaitCompleted(second.receipt().id(), Duration.ofSeconds(5));

@@ -1,7 +1,6 @@
 package com.example.receipt.domain.receipt.dto;
 
 import com.example.receipt.domain.receipt.model.LineItem;
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.PositiveOrZero;
 
@@ -11,8 +10,7 @@ import java.util.List;
 import java.util.Set;
 
 public record CorrectFieldsRequest(
-        @NotNull @PositiveOrZero Long version, //todo positiveorzero가 뭐지?
-        @NotBlank String reviewerId,
+        @NotNull @PositiveOrZero Long version,
         String merchant,
         LocalDate date,
         BigDecimal totalAmount,

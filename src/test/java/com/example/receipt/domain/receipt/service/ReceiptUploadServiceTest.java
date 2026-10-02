@@ -39,6 +39,7 @@ class ReceiptUploadServiceTest {
         ReceiptExtractionJob job = mock(ReceiptExtractionJob.class);
 
         when(receipt.id()).thenReturn(1L);
+        when(receipt.ownerEmployeeId()).thenReturn(1L);
         when(job.duplicateDetected()).thenReturn(true);
         when(receiptRepository.findByCompanyIdAndImageSha256(anyString(), anyString()))
                 .thenReturn(Optional.empty(), Optional.of(receipt));
@@ -52,7 +53,7 @@ class ReceiptUploadServiceTest {
                 duplicateReceiptLock, imageStorage, Clock.systemUTC(), metrics);
 
         UploadResult result = service.upload(
-                "company", null, "receipt.png", "image/png", new byte[]{1});
+                "company", null, "receipt.png", "image/png", new byte[]{1}, 1L);
 
         assertThat(result.receipt()).isSameAs(receipt);
         assertThat(result.job()).isSameAs(job);

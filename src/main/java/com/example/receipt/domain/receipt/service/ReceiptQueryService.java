@@ -17,21 +17,25 @@ import java.util.List;
 @Transactional(readOnly = true)
 @RequiredArgsConstructor
 public class ReceiptQueryService {
+    private final ReceiptAccess access;
     private final ReceiptRepository receiptRepository;
     private final AuditEventRepository auditRepository;
     private final ReceiptExtractionJobRepository jobRepository;
 
     public Receipt get(Long id) {
-        return receiptRepository.findById(id).orElseThrow(() -> new ReceiptNotFoundException(id));
+        Receipt receipt = receiptRepository.findById(id).orElseThrow(() -> new ReceiptNotFoundException(id));
+        access.read(receipt);
+        return receipt;
     }
 
     public ReceiptExtractionJob getJob(Long receiptId) {
+        get(receiptId);
         return jobRepository.findByReceiptId(receiptId)
                 .orElseThrow(() -> new ReceiptNotFoundException(receiptId));
     }
 
     public List<AuditEvent> auditLog(Long id) {
-        if (!receiptRepository.existsById(id)) throw new ReceiptNotFoundException(id);
+        get(id);
         return auditRepository.findByReceiptIdOrderByOccurredAtAsc(id);
     }
 }
