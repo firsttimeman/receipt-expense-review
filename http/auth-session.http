@@ -1,0 +1,39 @@
+# IntelliJ HTTP Client는 응답의 JSESSIONID 쿠키를 자동으로 저장하고 다시 전송합니다.
+# loginId/password를 실제로 발급받고 비밀번호 설정을 마친 계정으로 바꿔 실행하세요.
+@baseUrl = http://localhost:8080
+@loginId = admin
+@password = replace-with-your-password
+
+### 1. 로그인 전 CSRF 토큰 발급
+GET {{baseUrl}}/api/auth/csrf
+
+> {%
+    client.global.set("csrfToken", response.body.token);
+%}
+
+### 2. JSON 로그인 (성공: 204, 인증 실패: 401)
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+X-CSRF-TOKEN: {{csrfToken}}
+
+{
+  "loginId": "{{loginId}}",
+  "password": "{{password}}"
+}
+
+### 3. 로그인 확인. 동일한 Redis/DB를 사용하는 다른 서버 포트로 바꿔도 유지됩니다.
+GET {{baseUrl}}/api/auth/me
+
+### 4. 로그인 시 이전 CSRF 토큰이 폐기되므로 변경 요청 전에 다시 발급받습니다.
+GET {{baseUrl}}/api/auth/csrf
+
+> {%
+    client.global.set("csrfToken", response.body.token);
+%}
+
+### 5. 로그아웃. 공유 Redis 세션이 삭제되어 모든 서버에서 로그인이 해제됩니다.
+POST {{baseUrl}}/api/auth/logout
+X-CSRF-TOKEN: {{csrfToken}}
+
+### 6. 로그아웃 확인 (401)
+GET {{baseUrl}}/api/auth/me

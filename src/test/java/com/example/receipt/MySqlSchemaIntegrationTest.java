@@ -1,21 +1,21 @@
 package com.example.receipt;
 
-import com.example.receipt.service.ReceiptUploadService;
-import com.example.receipt.service.ReceiptJobClaimService;
-import com.example.receipt.service.ExpiredJobRecoveryService;
-import com.example.receipt.service.ReceiptExtractionLifecycleService;
-import com.example.receipt.service.ReceiptExtractionProcessor;
-import com.example.receipt.service.model.UploadResult;
-import com.example.receipt.service.model.ClaimedReceiptJob;
-import com.example.receipt.domain.ExtractionJobStatus;
-import com.example.receipt.domain.ReceiptStatus;
-import com.example.receipt.exception.JobOwnershipLostException;
-import com.example.receipt.quality.ImageQualityResult;
-import com.example.receipt.quality.ImageQualityStatus;
-import com.example.receipt.repository.AuditEventRepository;
-import com.example.receipt.repository.IdempotencyRecordRepository;
-import com.example.receipt.repository.ReceiptRepository;
-import com.example.receipt.repository.ReceiptExtractionJobRepository;
+import com.example.receipt.domain.extraction.dto.ClaimedReceiptJob;
+import com.example.receipt.domain.extraction.exception.JobOwnershipLostException;
+import com.example.receipt.domain.extraction.model.ExtractionJobStatus;
+import com.example.receipt.domain.extraction.quality.ImageQualityResult;
+import com.example.receipt.domain.extraction.quality.ImageQualityStatus;
+import com.example.receipt.domain.extraction.repository.ReceiptExtractionJobRepository;
+import com.example.receipt.domain.extraction.service.ExpiredJobRecoveryService;
+import com.example.receipt.domain.extraction.service.ReceiptExtractionLifecycleService;
+import com.example.receipt.domain.extraction.service.ReceiptExtractionProcessor;
+import com.example.receipt.domain.extraction.service.ReceiptJobClaimService;
+import com.example.receipt.domain.receipt.dto.UploadResult;
+import com.example.receipt.domain.receipt.model.ReceiptStatus;
+import com.example.receipt.domain.receipt.repository.AuditEventRepository;
+import com.example.receipt.domain.receipt.repository.IdempotencyRecordRepository;
+import com.example.receipt.domain.receipt.repository.ReceiptRepository;
+import com.example.receipt.domain.receipt.service.ReceiptUploadService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -94,7 +94,7 @@ class MySqlSchemaIntegrationTest {
                     .mapToObj(index -> executor.submit(() -> {
                         start.await();
                         return uploadService.upload("mysql-company", null, "receipt-" + index + ".png",
-                                "image/png", image);
+                                "image/png", image, null);
                     })).toList();
             start.countDown();
             Set<Object> ids = new HashSet<>();
@@ -113,7 +113,7 @@ class MySqlSchemaIntegrationTest {
     void twoWorkersDistributeJobsWithoutOverlappingOnMySqlSkipLocked() throws Exception {
         for (int index = 0; index < 6; index++) {
             uploadService.upload("mysql-worker-company", null, "receipt-" + index + ".png",
-                    "image/png", pngWithMarker(800, 1200, index));
+                    "image/png", pngWithMarker(800, 1200, index), null);
         }
 
         ExecutorService executor = Executors.newFixedThreadPool(2);
@@ -159,7 +159,7 @@ class MySqlSchemaIntegrationTest {
     @Test
     void expiredLeaseIsRecoveredAndStaleWorkerCannotComplete() throws Exception {
         UploadResult uploaded = uploadService.upload("mysql-recovery-company", null,
-                "recover.png", "image/png", pngWithMarker(800, 1200, 99));
+                "recover.png", "image/png", pngWithMarker(800, 1200, 99), null);
 
         ClaimedReceiptJob staleClaim = claimService.claimAvailable(
                 "stale-worker", 1, Duration.ofMillis(5)).get(0);
