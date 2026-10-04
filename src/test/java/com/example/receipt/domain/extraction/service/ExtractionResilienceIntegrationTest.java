@@ -110,7 +110,7 @@ class ExtractionResilienceIntegrationTest {
     }
 
     private UploadResult upload(String fileName, Color color) throws Exception {
-        return uploadService.upload("resilience-company", null, fileName, "image/png", png(color));
+        return uploadService.upload("resilience-company", null, fileName, "image/png", png(color), null);
     }
 
     private ClaimedReceiptJob claimNext() throws Exception {

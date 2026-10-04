@@ -1,0 +1,189 @@
+{
+  "generated_at_utc": "2026-10-02T18:31:58.138206+00:00",
+  "base_commit": "1e247fc0e89a880db1833b64ddd635a62478bee6",
+  "command": "source /workspace/.cloud-tools/activate.sh && bash scripts/cloud/verify.sh",
+  "exit_code": 0,
+  "totals": {
+    "tests": 43,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "source_fingerprint_sha256": "0d0e782faafddd87c991d5d7b8af76e187db7bef185dda30cc51abbbb351462f",
+  "source_fingerprint_rule": "sorted src/**/*.java,yml,sql plus build.gradle, settings.gradle, gradle/wrapper/gradle-wrapper.properties and scripts/cloud/verify.sh; hash each relative path + NUL + content + NUL",
+  "suites": [
+    {
+      "name": "com.example.receipt.EmployeeAuthorizationIntegrationTest",
+      "timestamp": "2026-10-02T18:29:57.525Z",
+      "tests": 13,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "cases": [
+        "staleAccountUpdateCannotEraseAJustSetPassword()",
+        "inactiveAccountCannotLoginUseSessionOrSetPassword()",
+        "actualReviewerIsAuditedForCorrectionApprovalAndRejection()",
+        "concurrentCrossOwnerIdempotencyRaceHasOneWinnerWithoutDisclosure()",
+        "employeeOwnsSubmissionAndOtherEmployeeCannotReadAuditOrModify()",
+        "setupLoginLogoutAndInvalidCredentials()",
+        "passwordSetupIsConsumedOnlyOnceUnderConcurrency()",
+        "adminIssuesAccountsAndDatabaseRejectsDuplicateLogin()",
+        "legacyOwnerlessReceiptIsQuarantinedForAdminReadOnly()",
+        "bootstrapIsOneTimeAndConcurrentInvocationsCannotCreateTwoAdmins()",
+        "crossOwnerDuplicateAndIdempotencyNeverReturnOrMutateOriginalReceipt()",
+        "csrfIsRequiredIncludingLoginAndPasswordAndSessionRotatesOnLogin()",
+        "expiredInvalidAndShortPasswordTokensDoNotSetPasswordOrLeakSecrets()"
+      ]
+    },
+    {
+      "name": "com.example.receipt.EmployeeMigrationIntegrationTest",
+      "timestamp": "2026-10-02T18:30:25.889Z",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "cases": [
+        "upgradesPopulatedV4WithoutGuessingOwnersAndEnforcesAccountConstraints()"
+      ]
+    },
+    {
+      "name": "com.example.receipt.MySqlSchemaIntegrationTest",
+      "timestamp": "2026-10-02T18:30:48.894Z",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "cases": [
+        "flywaySchemaAndRedisLockConcurrencyWorkOnMySql()",
+        "expiredLeaseIsRecoveredAndStaleWorkerCannotComplete()",
+        "twoWorkersDistributeJobsWithoutOverlappingOnMySqlSkipLocked()"
+      ]
+    },
+    {
+      "name": "com.example.receipt.domain.extraction.extractor.OpenAiReceiptExtractorTest",
+      "timestamp": "2026-10-02T18:30:50.570Z",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "cases": [
+        "wrapsSlowProviderAsExtractionFailure()",
+        "wrapsRateLimitWithoutExposingResponseBody()",
+        "wrapsAuthenticationFailure()",
+        "missingApiKeyFailsLocallyWithoutNetworkCall()",
+        "wrapsProviderServerError()"
+      ]
+    },
+    {
+      "name": "com.example.receipt.domain.extraction.service.ExtractionResilienceIntegrationTest",
+      "timestamp": "2026-10-02T18:30:52.838Z",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "cases": [
+        "extractionFailureStopsAfterMaximumAttempts()",
+        "rateLimitIsPersistedAndEventuallyCompletesAfterRetry()"
+      ]
+    },
+    {
+      "name": "com.example.receipt.domain.extraction.service.ReceiptExtractionWorkerTest",
+      "timestamp": "2026-10-02T18:30:53.227Z",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "cases": [
+        "refillsFreedCapacityWithoutWaitingForNextScheduledPoll()"
+      ]
+    },
+    {
+      "name": "com.example.receipt.domain.extraction.service.WorkerAutomationIntegrationTest",
+      "timestamp": "2026-10-02T18:30:57.563Z",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "cases": [
+        "scheduledWorkerAutomaticallyProcessesQueuedJobExactlyOnce()",
+        "bulkheadLimitsExternalExtractionToConfiguredConcurrency()"
+      ]
+    },
+    {
+      "name": "com.example.receipt.domain.receipt.controller.ReceiptApiIntegrationTest",
+      "timestamp": "2026-10-02T18:31:00.951Z",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "cases": [
+        "duplicateImageBecomesReviewTargetWithoutCreatingSecondRow()",
+        "idempotencyKeyReplaysSameReceipt()",
+        "supportsFieldCorrectionFinalDecisionAndAuditTrail()",
+        "routesLowResolutionAndUnreadableImagesSafely()",
+        "rejectsStaleReviewerVersion()",
+        "acceptsReceiptDurablyThenProcessesAndAutoApprovesIt()",
+        "concurrentDuplicateUploadsLeaveOneReceipt()"
+      ]
+    },
+    {
+      "name": "com.example.receipt.domain.receipt.service.ConcurrentExtractionCharacterizationTest",
+      "timestamp": "2026-10-02T18:31:07.847Z",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "cases": [
+        "asyncIntakeCreatesOneJobAndDoesNotCallExtractorInsideConcurrentUploads()",
+        "processedDuplicateUploadsBypassLockAndKeepOneAuditEvent()"
+      ]
+    },
+    {
+      "name": "com.example.receipt.domain.receipt.service.ReceiptUploadServiceTest",
+      "timestamp": "2026-10-02T18:31:08.632Z",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "cases": [
+        "returnsCompletedDuplicateWhenRedisWaitTimesOut()"
+      ]
+    },
+    {
+      "name": "com.example.receipt.domain.receipt.validation.BusinessRegistrationNumberValidatorTest",
+      "timestamp": "2026-10-02T18:31:09.581Z",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "cases": [
+        "validatesKoreanBusinessNumberChecksum()"
+      ]
+    },
+    {
+      "name": "com.example.receipt.domain.receipt.validation.ValidationEngineTest",
+      "timestamp": "2026-10-02T18:31:09.584Z",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "cases": [
+        "completelyMissingCoreDataRoutesToManualEntry()",
+        "clearWeekdayReceiptIsAutoApproved()",
+        "weekendOverLimitAndDuplicateNeedReview()"
+      ]
+    },
+    {
+      "name": "com.example.receipt.global.observability.ReceiptMetricsTest",
+      "timestamp": "2026-10-02T18:31:09.589Z",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "cases": [
+        "unfinishedJobGaugeReadsCurrentDatabaseCount()",
+        "recordsOnlyMinimalOperationalCounters()"
+      ]
+    }
+  ]
+}

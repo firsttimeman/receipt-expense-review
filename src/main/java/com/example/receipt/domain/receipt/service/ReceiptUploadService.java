@@ -42,9 +42,9 @@ public class ReceiptUploadService {
     private final ReceiptMetrics metrics;
 
     public UploadResult upload(String companyId, String idempotencyKey, String fileName,
-                               String contentType, byte[] bytes) {
+                               String contentType, byte[] bytes, Long ownerId) {
         try {
-            UploadResult result = doUpload(companyId, idempotencyKey, fileName, contentType, bytes);
+            UploadResult result = doUpload(companyId, idempotencyKey, fileName, contentType, bytes, ownerId);
             metrics.recordUpload(uploadOutcome(result));
             return result;
         } catch (RuntimeException exception) {
@@ -54,16 +54,16 @@ public class ReceiptUploadService {
     }
 
     private UploadResult doUpload(String companyId, String idempotencyKey, String fileName,
-                                  String contentType, byte[] bytes) {
+                                  String contentType, byte[] bytes, Long ownerId) {
         if (bytes == null || bytes.length == 0) {
             throw new IllegalArgumentException("업로드 파일은 비어 있을 수 없습니다.");
         }
         String normalizedKey = normalize(idempotencyKey);
-        Optional<UploadResult> replay = findIdempotentReplay(companyId, normalizedKey);
+        Optional<UploadResult> replay = findIdempotentReplay(companyId, normalizedKey, ownerId);
         if (replay.isPresent()) return replay.get();
 
         String imageSha256 = sha256(bytes);
-        Optional<UploadResult> processedDuplicate = findProcessedDuplicate(companyId, imageSha256);
+        Optional<UploadResult> processedDuplicate = findProcessedDuplicate(companyId, imageSha256, ownerId);
         if (processedDuplicate.isPresent()) {
             metrics.recordDuplicateFastPath();
             return processedDuplicate.get();
@@ -72,12 +72,17 @@ public class ReceiptUploadService {
         try {
             return duplicateReceiptLock.execute(companyId, imageSha256,
                     () -> acceptWhileLocked(companyId, normalizedKey, fileName,
-                            contentType, bytes, imageSha256));
+                            contentType, bytes, imageSha256, ownerId));
         } catch (ReceiptConflictException exception) {
             // 락 대기 중 다른 요청이 DB 생성을 끝냈다면 충돌 응답 대신 그 결과로 수렴한다.
-            return findProcessedDuplicate(companyId, imageSha256)
+            return findProcessedDuplicate(companyId, imageSha256, ownerId)
                     .orElseThrow(() -> exception);
         }
+    }
+
+    private void ensureOwner(Receipt receipt, Long ownerId) {
+        if (!java.util.Objects.equals(receipt.ownerEmployeeId(), ownerId))
+            throw new ReceiptConflictException("이미 사용 중인 이미지 또는 요청 키입니다.");
     }
 
     private String uploadOutcome(UploadResult result) {
@@ -86,12 +91,13 @@ public class ReceiptUploadService {
     }
 
     private UploadResult acceptWhileLocked(String companyId, String idempotencyKey, String fileName,
-                                           String contentType, byte[] bytes, String imageSha256) {
-        Optional<UploadResult> replay = findIdempotentReplay(companyId, idempotencyKey);
+                                           String contentType, byte[] bytes, String imageSha256, Long ownerId) {
+        Optional<UploadResult> replay = findIdempotentReplay(companyId, idempotencyKey, ownerId);
         if (replay.isPresent()) return replay.get();
 
         Optional<Receipt> sameImage = receiptRepository.findByCompanyIdAndImageSha256(companyId, imageSha256);
         if (sameImage.isPresent()) {
+            ensureOwner(sameImage.get(), ownerId);
             Receipt duplicate = persistenceService.markDuplicate(sameImage.get().id());
             return existingResult(duplicate, false);
         }
@@ -100,7 +106,8 @@ public class ReceiptUploadService {
         String storageKey = imageStorage.store(companyId, imageSha256, bytes);
         Receipt receipt = new Receipt(companyId, imageSha256, safeFileName(fileName), contentType,
                 bytes.length, null, null, List.of(), now);
-        AuditEvent uploaded = new AuditEvent(null, now, "system", AuditAction.UPLOADED,
+        receipt.submittedBy(ownerId);
+        AuditEvent uploaded = new AuditEvent(null, now, ownerId == null ? "system" : "employee:" + ownerId, AuditAction.UPLOADED,
                 null, null, createUploadDetails(fileName, contentType, bytes.length, imageSha256));
 
         try {
@@ -108,34 +115,40 @@ public class ReceiptUploadService {
                     receipt, storageKey, idempotencyKey, List.of(uploaded));
             return new UploadResult(receipt, job, true, false);
         } catch (DataIntegrityViolationException exception) {
-            return resolveConstraintConflict(companyId, imageSha256, idempotencyKey, exception);
+            return resolveConstraintConflict(companyId, imageSha256, idempotencyKey, exception, ownerId);
         }
     }
 
     private UploadResult resolveConstraintConflict(String companyId, String imageSha256,
                                                    String idempotencyKey,
-                                                   DataIntegrityViolationException exception) {
-        Optional<UploadResult> replay = findIdempotentReplay(companyId, idempotencyKey);
+                                                   DataIntegrityViolationException exception, Long ownerId) {
+        Optional<UploadResult> replay = findIdempotentReplay(companyId, idempotencyKey, ownerId);
         if (replay.isPresent()) return replay.get();
 
         Receipt existing = receiptRepository.findByCompanyIdAndImageSha256(companyId, imageSha256)
                 .orElseThrow(() -> exception);
+        ensureOwner(existing, ownerId);
         return existingResult(persistenceService.markDuplicate(existing.id()), false);
     }
 
-    private Optional<UploadResult> findIdempotentReplay(String companyId, String idempotencyKey) {
+    private Optional<UploadResult> findIdempotentReplay(String companyId, String idempotencyKey, Long ownerId) {
         if (idempotencyKey == null) return Optional.empty();
         return idempotencyRepository.findByCompanyIdAndIdempotencyKey(companyId, idempotencyKey)
                 .map(IdempotencyRecord::receiptId)
-                .map(receiptId -> existingResult(findReceipt(receiptId), true));
+                .map(receiptId -> {
+                    Receipt receipt = findReceipt(receiptId);
+                    ensureOwner(receipt, ownerId);
+                    return existingResult(receipt, true);
+                });
     }
 
     /**
      * 최초 중복 감지가 이미 감사 로그와 규칙에 반영된 영수증은 Redis 락을 다시 기다릴 이유가 없다.
      * 아직 중복 표시가 없으면 기존 락 경로에서 한 번만 markDuplicate를 실행한다.
      */
-    private Optional<UploadResult> findProcessedDuplicate(String companyId, String imageSha256) {
+    private Optional<UploadResult> findProcessedDuplicate(String companyId, String imageSha256, Long ownerId) {
         return receiptRepository.findByCompanyIdAndImageSha256(companyId, imageSha256)
+                .map(receipt -> { ensureOwner(receipt, ownerId); return receipt; })
                 .flatMap(receipt -> jobRepository.findByReceiptId(receipt.id())
                         .filter(ReceiptExtractionJob::duplicateDetected)
                         .map(job -> existingResult(receipt, job, false)));

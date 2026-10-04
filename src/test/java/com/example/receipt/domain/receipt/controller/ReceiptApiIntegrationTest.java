@@ -18,7 +18,13 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+import jakarta.servlet.http.Cookie;
 
 import javax.imageio.ImageIO;
 import java.awt.*;
@@ -33,11 +39,26 @@ import java.util.concurrent.*;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
+@Testcontainers
 class ReceiptApiIntegrationTest {
+    @Container
+    static final GenericContainer<?> REDIS = new GenericContainer<>("redis:7.2-alpine").withExposedPorts(6379);
+
+    @DynamicPropertySource
+    static void redisProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.data.redis.host", REDIS::getHost);
+        registry.add("spring.data.redis.port", () -> REDIS.getMappedPort(6379));
+    }
+
+    private Cookie sessionCookie;
+
+    private Cookie submitterCookie;
+
     @Autowired MockMvc mockMvc;
     @Autowired ObjectMapper objectMapper;
     @Autowired ReceiptUploadService uploadService;
@@ -48,12 +69,35 @@ class ReceiptApiIntegrationTest {
     @Autowired AuditEventRepository auditRepository;
     @Autowired IdempotencyRecordRepository idempotencyRepository;
 
+    @Autowired com.example.receipt.domain.employee.repository.EmployeeRepository employees;
+    @Autowired org.springframework.security.crypto.password.PasswordEncoder encoder;
+
     @BeforeEach
-    void cleanDatabase() {
+    void cleanDatabase() throws Exception {
         auditRepository.deleteAll();
         idempotencyRepository.deleteAll();
         jobRepository.deleteAll();
         receiptRepository.deleteAll();
+        employees.deleteAll();
+        var reviewer = new com.example.receipt.domain.employee.entity.Employee("regression-reviewer", "회귀 테스트 검토자",
+                com.example.receipt.domain.employee.model.EmployeeRole.REVIEWER);
+        String passwordHash = encoder.encode("regression-password-123");
+        reviewer.setPassword(passwordHash);
+        employees.saveAndFlush(reviewer);
+        var submitter = new com.example.receipt.domain.employee.entity.Employee("regression-submitter", "회귀 테스트 제출자",
+                com.example.receipt.domain.employee.model.EmployeeRole.EMPLOYEE);
+        submitter.setPassword(passwordHash);
+        employees.saveAndFlush(submitter);
+        sessionCookie = login(reviewer.loginId());
+        submitterCookie = login(submitter.loginId());
+    }
+
+    private Cookie login(String loginId) throws Exception {
+        return mockMvc.perform(post("/api/auth/login").with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(java.util.Map.of(
+                                "loginId", loginId, "password", "regression-password-123"))))
+                .andExpect(status().isNoContent()).andReturn().getResponse().getCookie("JSESSIONID");
     }
 
     @Test
@@ -102,7 +146,7 @@ class ReceiptApiIntegrationTest {
         String correction = """
                 {"version":%d,"reviewerId":"reviewer-1","merchant":"수정된 상점"}
                 """.formatted(version);
-        String correctedJson = mockMvc.perform(patch("/api/receipts/{id}/fields", id)
+        String correctedJson = mockMvc.perform(patch("/api/receipts/{id}/fields", id).cookie(sessionCookie).with(csrf())
                         .contentType(MediaType.APPLICATION_JSON).content(correction))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.currentData.merchant").value("수정된 상점"))
@@ -112,12 +156,12 @@ class ReceiptApiIntegrationTest {
         String decision = """
                 {"version":%d,"reviewerId":"reviewer-1","decision":"APPROVE","note":"증빙 확인"}
                 """.formatted(corrected.path("version").asLong());
-        mockMvc.perform(post("/api/receipts/{id}/decision", id)
+        mockMvc.perform(post("/api/receipts/{id}/decision", id).cookie(sessionCookie).with(csrf())
                         .contentType(MediaType.APPLICATION_JSON).content(decision))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("APPROVED"));
 
-        mockMvc.perform(get("/api/receipts/{id}/audit-events", id))
+        mockMvc.perform(get("/api/receipts/{id}/audit-events", id).cookie(sessionCookie))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[*].action").value(org.hamcrest.Matchers.hasItems(
                         "UPLOADED", "EXTRACTION_COMPLETED", "VALIDATION_COMPLETED",
@@ -133,11 +177,11 @@ class ReceiptApiIntegrationTest {
         String body = """
                 {"version":%d,"reviewerId":"reviewer-1","merchant":"첫 수정"}
                 """.formatted(version);
-        mockMvc.perform(patch("/api/receipts/{id}/fields", uploaded.path("id").asText())
+        mockMvc.perform(patch("/api/receipts/{id}/fields", uploaded.path("id").asText()).cookie(sessionCookie).with(csrf())
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk());
 
-        mockMvc.perform(patch("/api/receipts/{id}/fields", uploaded.path("id").asText())
+        mockMvc.perform(patch("/api/receipts/{id}/fields", uploaded.path("id").asText()).cookie(sessionCookie).with(csrf())
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isConflict());
     }
@@ -178,7 +222,7 @@ class ReceiptApiIntegrationTest {
                     .mapToObj(index -> executor.submit(() -> {
                         start.await();
                         return uploadService.upload("company-concurrent", null, "receipt-" + index + ".png",
-                                "image/png", image);
+                                "image/png", image, null);
                     })).toList();
             start.countDown();
             Set<Object> ids = new java.util.HashSet<>();
@@ -198,14 +242,14 @@ class ReceiptApiIntegrationTest {
         var request = multipart("/api/receipts").file(file).header("X-Company-Id", "company-a");
         // 실제 클라이언트처럼 재시도 요청에 동일한 중복 요청 방지 키를 전달한다.
         if (idempotencyKey != null) request.header("Idempotency-Key", idempotencyKey);
-        String json = mockMvc.perform(request)
+        String json = mockMvc.perform(request.cookie(submitterCookie).with(csrf()))
                 .andExpect(status().is(expectedStatus))
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
         return objectMapper.readTree(json);
     }
 
     private JsonNode getReceipt(long receiptId) throws Exception {
-        String json = mockMvc.perform(get("/api/receipts/{id}", receiptId))
+        String json = mockMvc.perform(get("/api/receipts/{id}", receiptId).cookie(sessionCookie))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
         return objectMapper.readTree(json);

@@ -21,6 +21,9 @@ public class Receipt {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Column(name = "owner_employee_id")
+    private Long ownerEmployeeId;
+
     @Version
     @Column(nullable = false)
     private long version;
@@ -81,6 +84,12 @@ public class Receipt {
         this.updatedAt = createdAt;
     }
 
+    public Long ownerEmployeeId() { return ownerEmployeeId; }
+    /** Assign only while creating a new receipt; historical ownership is immutable. */
+    public void submittedBy(Long employeeId) {
+        if (id != null || ownerEmployeeId != null) throw new IllegalStateException("이미 접수된 영수증입니다.");
+        ownerEmployeeId = employeeId;
+    }
     public Long id() { return id; }
     public long version() { return version; }
     public String companyId() { return companyId; }

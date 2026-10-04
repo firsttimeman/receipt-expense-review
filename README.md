@@ -1,217 +1,207 @@
 # 사내 영수증·경비 검수 백엔드
 
-직원이 제출한 영수증에서 거래 정보를 추출하고, 경비 규칙 검사와 검수자의 수정·승인·반려를 지원하는 Java/Spring Boot 개인 프로젝트입니다. 한 회사 내부 ERP의 영수증·경비 검수 모듈을 목표로 개발하고 있습니다.
-
-현재는 **이미지 접수, 비동기 추출, 규칙 검증, 개별 영수증 검수 API를 구현한 백엔드 MVP**입니다. 직원 계정·로그인·역할별 권한과 검수 목록·월별 집계는 다음 개발 범위입니다.
+한 회사 내부 ERP를 위한 Java 17 / Spring Boot 3.3.5 백엔드입니다. 직원 계정·세션 인증·영수증 소유권과 역할별 권한, 이미지 접수, 비동기 추출, 규칙 검증, 개별 검수를 구현했습니다. 프런트엔드·이메일 발송·멀티테넌트는 범위 밖입니다.
 
 ## 구현 현황
 
 | 영역 | 현재 상태 |
 |---|---|
-| 영수증 접수 | 이미지 업로드, SHA-256 중복 확인, 멱등성 키, 접수 후 `202 Accepted` 반환 |
-| 정보 추출 | Fake 추출기와 OpenAI 추출 어댑터, 기본 이미지 품질 검사 |
-| 경비 규칙 | 필수값·미래 날짜·금액·품목 합계·사업자번호 및 경비 정책 검사 |
-| 개별 검수 | 필드 수정, 승인·반려, 낙관적 락, 추출 원본과 수정값·감사 이력 보관 |
-| 비동기 작업 | MySQL 작업 큐, Worker 동시 실행 제한, 재시도, 점유 만료 작업 복구 |
-| 관측·테스트 | Actuator·Prometheus·Grafana, 단위·통합 테스트, k6 스크립트 |
-| 직원 계정·권한 | 개발 예정: 계정 발급, 비밀번호 설정, 로그인, 제출자·검수자 권한 |
-| 목록·집계 | 개발 예정: 본인 제출 내역, 검수 대기 목록, 기간·직원·상태 검색, 월별 집계 |
+| 계정 | ADMIN 계정 발급·활성 상태 관리, 일회용 비밀번호 설정, BCrypt 해시 |
+| 인증 | Spring Security 서버 세션, 로그인·로그아웃·인증 확인, CSRF 보호, 비활성 계정 차단 |
+| 권한 | 본인 영수증·감사 이력 조회, 업무 상태에 따른 수정, REVIEWER/ADMIN 승인·반려 |
+| 접수 | 이미지 SHA-256, Redis 잠금, MySQL 유니크 제약, 멱등성 키, `202 Accepted` |
+| 추출 | Fake 추출기·OpenAI 어댑터, 이미지 품질 검사, 결정론적 경비 규칙 |
+| 검수 | 낙관적 락, 추출 원본·수정값·실제 로그인한 행위자의 감사 이력 |
+| Worker | MySQL 작업 큐, 동시 실행 제한, 재시도·Lease 만료 복구, Claim Token |
+| 검증 | 단위·API 회귀, 실제 MySQL/Redis 권한·동시성 통합, 기존 데이터 Flyway 이관 |
+| 후속 개발 | 본인 제출 목록·검수 목록·기간별 검색·월별 집계 |
 
-## 주요 설계
+## 구조와 처리 흐름
 
-- **접수와 추출 분리:** 영수증·추출 작업·멱등성 기록·업로드 감사 이벤트를 하나의 DB 트랜잭션으로 저장하고, 외부 AI 호출은 Worker에서 수행합니다.
-- **중복 접수 제어:** 이미지 해시, Redis 잠금, MySQL 유니크 제약을 사용합니다. 이미 중복 감지가 반영된 이미지는 잠금 획득을 생략하고 기존 결과를 반환합니다.
-- **작업 선점과 복구:** `FOR UPDATE SKIP LOCKED`로 작업을 분배합니다. 점유 기간인 Lease가 만료되면 작업을 회수하고, Claim Token으로 이전 Worker의 늦은 결과 반영을 차단합니다.
-- **검수 충돌 감지:** 영수증의 JPA `@Version`과 요청 버전을 비교해 오래된 데이터로 변경하는 요청을 거부합니다.
-- **검수 근거 보관:** AI 추출 원본, 현재 필드값, 규칙별 결과와 변경 이력을 기록합니다.
-
-Claim Token은 오래된 결과의 저장을 방지합니다. Worker 중단·재시도 상황에서 외부 AI 호출이 정확히 한 번만 발생하는 것을 보장하지는 않습니다.
-
-## 처리 구조
-
-```mermaid
-flowchart LR
-    A[영수증 업로드] --> B[중복 확인·이미지 저장]
-    B --> C[영수증·작업·감사 이벤트 저장]
-    C --> D[202 Accepted]
-    C --> E[Worker 작업 선점]
-    E --> F{이미지 품질 검사}
-    F -->|통과| G[Fake 또는 OpenAI 추출]
-    F -->|실패| H[재촬영·판독 불가]
-    G --> I[경비 규칙 검증]
-    I --> J[자동 승인 또는 검수 필요]
-    J --> K[필드 수정·승인·반려]
-    K --> L[감사 이력 기록]
-```
-
-작업의 기술적 처리 상태와 영수증의 업무 상태를 구분합니다.
-
-- 작업 상태: `QUEUED`, `PROCESSING`, `RETRY_WAIT`, `COMPLETED`, `FAILED`
-- 영수증 상태: `AUTO_APPROVED`, `NEEDS_REVIEW`, `NEEDS_RECAPTURE`, `UNREADABLE`, `MANUAL_ENTRY`, `APPROVED`, `REJECTED`
-
-접수 후 추출이 끝나기 전에는 영수증의 `status`가 `null`이며, `jobStatus`로 진행 상황을 확인합니다. 추출 예외는 최대 3회 시도하고, 최종 실패하면 작업은 `FAILED`, 영수증은 `MANUAL_ENTRY`가 됩니다.
-
-## 기술 스택
-
-| 구분 | 사용 기술 |
-|---|---|
-| 언어·프레임워크 | Java 17, Spring Boot 3.3.5, Gradle |
-| 데이터 저장 | Spring Data JPA, MySQL 8.4, Flyway |
-| 중복 요청 잠금 | Redis 7.2, Redisson |
-| AI 연동 | OpenAI Responses API, 교체 가능한 `ReceiptExtractor` 인터페이스 |
-| 테스트 | JUnit 5, Spring Boot Test, H2, Testcontainers, k6 |
-| 실행·관측 | Docker Compose, Actuator, Micrometer, Prometheus, Grafana |
-
-## 패키지 구조
-
-기능을 찾을 때 한 도메인 안에서 요청 처리부터 저장까지 따라갈 수 있도록 도메인별로 패키지를 구성합니다.
+코드는 `com.example.receipt.domain` 아래 기능별 구조를 유지합니다.
 
 ```text
-src/main/java/com/example/receipt/
-├── ReceiptApplication.java
-├── domain/
-│   ├── receipt/                # 영수증 접수·검수·감사 이력
-│   │   ├── controller/
-│   │   ├── dto/
-│   │   ├── entity/
-│   │   ├── exception/
-│   │   ├── model/
-│   │   ├── repository/
-│   │   ├── service/
-│   │   └── validation/
-│   └── extraction/             # 추출 작업 선점·실행·재시도·복구
-│       ├── config/
-│       ├── dto/
-│       ├── entity/
-│       ├── exception/
-│       ├── extractor/
-│       ├── model/
-│       ├── quality/
-│       ├── repository/
-│       └── service/
-└── global/                     # 공통 설정과 인프라
-    ├── config/
-    ├── exception/
-    ├── lock/
-    ├── observability/
-    └── storage/
+domain/
+├── employee/    # controller, dto, entity, model, repository, service
+├── receipt/     # 영수증 접수·검수·감사·소유권·검증
+└── extraction/  # 추출기·내구성 작업 큐·Worker
+global/          # 공통 설정·Security·잠금·저장·예외·관측
 ```
 
-각 도메인에는 필요한 계층을 둡니다. `dto`는 API·서비스 간 전달 데이터를, `model`은 상태·값 객체를 담습니다. 테스트도 같은 도메인 구조를 따르며, 여러 도메인을 함께 검증하는 MySQL 통합 테스트는 테스트 루트에 둡니다. 직원 계정 기능을 추가할 때도 `domain/employee/` 아래에 필요한 `controller`, `dto`, `service`, `entity`, `repository`를 구성할 계획입니다.
+영수증·작업·멱등성 기록·업로드 감사 이벤트를 한 DB 트랜잭션으로 저장하고 추출은 Worker에서 실행합니다. `FOR UPDATE SKIP LOCKED`로 작업을 나누며, Claim Token으로 오래된 Worker의 결과 저장을 차단합니다. 외부 AI 호출이 정확히 한 번만 실행된다는 보장은 아닙니다.
 
-## 로컬 실행
+접수 후 업무 `status`는 추출 완료 전까지 `null`이며 `jobStatus`를 조회합니다. 작업 상태는 QUEUED / PROCESSING / RETRY_WAIT / COMPLETED / FAILED, 업무 상태는 AUTO_APPROVED / NEEDS_REVIEW / NEEDS_RECAPTURE / UNREADABLE / MANUAL_ENTRY / APPROVED / REJECTED입니다. 추출 재시도는 기본 3회이며 최종 실패 시 MANUAL_ENTRY가 됩니다.
 
-JDK 17과 Docker Compose를 준비하고, 아래 명령을 **프로젝트 루트**에서 실행합니다.
+## 실행 환경
+
+JDK 17, Docker Compose, Gradle wrapper를 사용합니다. 저장소 루트에서 실행하세요.
 
 ```bash
 docker compose up -d --wait mysql redis
-./gradlew bootRun
+RECEIPT_EXTRACTOR_PROVIDER=fake ./gradlew bootRun
 ```
 
-기본 연결 주소는 애플리케이션 `http://localhost:8080`, MySQL `localhost:3307`, Redis `localhost:6379`입니다. 원본 이미지는 기본적으로 `runtime/receipt-images/`에 저장합니다.
+기본 주소는 앱 `localhost:8080`, MySQL `localhost:3307`, Redis `localhost:6379`입니다. DB는 Flyway와 Hibernate `validate`를 사용합니다. 이미지는 `runtime/receipt-images/`에 저장합니다. Fake 추출기는 합성 데이터로 흐름을 검증하며 실제 OCR을 하지 않습니다. 운영 계정이나 OpenAI 비밀키 없이 모든 자동 테스트를 실행할 수 있습니다.
 
-기본 `fake` 추출기는 외부 API 키 없이 처리 흐름을 확인하기 위한 테스트용 구현입니다. 실제 이미지의 글자를 인식하지 않고 정해진 데이터를 반환합니다.
+### 최초 관리자 준비
 
-### 영수증 접수와 조회
+기본 관리자·공용 비밀번호는 없습니다. **일반 서버를 중지한 상태에서** 아래 별도 모드로 빈 직원 테이블에 관리자 한 명을 생성합니다. DB 잠금으로 동시 실행도 한 번만 성공하며 직원이 이미 있으면 비밀번호를 덮어쓰지 않고 실패합니다.
 
 ```bash
-curl -i -X POST http://localhost:8080/api/receipts \
-  -H 'X-Company-Id: demo-company' \
+./gradlew bootJar
+umask 077
+PASSWORD_FILE=$(mktemp)
+python3 - "$PASSWORD_FILE" <<'PY'
+import getpass, pathlib, sys
+password = getpass.getpass("관리자 비밀번호 (12자 이상, UTF-8 72바이트 이하): ")
+assert password == getpass.getpass("다시 입력: ")
+pathlib.Path(sys.argv[1]).write_text(password)
+PY
+RECEIPT_WORKER_ENABLED=false java -jar build/libs/receipt-expense-review-0.0.1-SNAPSHOT.jar \
+  --spring.main.web-application-type=none \
+  --receipt.bootstrap.enabled=true \
+  --receipt.bootstrap.login-id=admin-local \
+  --receipt.bootstrap.password-file="$PASSWORD_FILE"
+rm -f "$PASSWORD_FILE"
+RECEIPT_EXTRACTOR_PROVIDER=fake ./gradlew bootRun
+```
+
+파일은 소유자만 접근할 수 있는 `600` 권한이어야 합니다. 비밀번호를 CLI 인수·셸 기록·Git에 넣지 않습니다. 준비 실행은 성공 후 종료하며, 웹 실행에서는 준비 모드를 거절합니다. 평소 서버 시작 인수에는 bootstrap 설정을 두지 않습니다.
+
+## 인증 방식과 계정 사용
+
+동일 출처 웹 ERP를 위한 **서버 세션 + HttpOnly JSESSIONID 쿠키**를 선택했습니다. 브라우저 저장소에 장기 bearer token을 두지 않으며 로그인 시 세션 ID가 바뀝니다. 기본 유휴 만료는 30분, SameSite는 Strict입니다. HTTPS 환경에서는 `SESSION_COOKIE_SECURE=true`를 설정합니다. 세션은 서버 메모리에 있으므로 재시작 시 로그아웃되며 다중 서버 세션 공유는 구현하지 않았습니다.
+
+모든 변경 요청(로그인·비밀번호 설정·로그아웃 포함)에 CSRF 헤더가 필요합니다. `/api/auth/csrf`에서 `headerName`, `token`을 얻어 같은 쿠키 저장소와 함께 전송합니다. 로그인·로그아웃 후에는 토큰을 다시 받습니다. 인증 누락은 `401`, 권한 부족·CSRF 누락은 `403`입니다. 계정 로그인 ID는 소문자 ASCII 영숫자 및 `._-`, 3~64자이며 DB 유니크 제약으로 중복을 막습니다.
+
+### 로그인·계정 발급 예시
+
+Bash, curl, Python 3를 사용합니다. 쿠키·토큰·비밀번호 파일은 `umask 077` 아래에서 만들고 사용 후 삭제합니다.
+
+```bash
+BASE=http://localhost:8080
+umask 077
+COOKIE=$(mktemp)
+PASSWORD_FILE=$(mktemp)
+python3 - "$PASSWORD_FILE" <<'PY'
+import getpass, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(getpass.getpass("로그인 비밀번호: "))
+PY
+CSRF=$(curl -fsS -c "$COOKIE" "$BASE/api/auth/csrf" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+curl -i -b "$COOKIE" -c "$COOKIE" -H "X-CSRF-TOKEN: $CSRF" \
+  --data-urlencode 'loginId=admin-local' --data-urlencode "password@$PASSWORD_FILE" "$BASE/api/auth/login"
+rm -f "$PASSWORD_FILE"
+CSRF=$(curl -fsS -b "$COOKIE" -c "$COOKIE" "$BASE/api/auth/csrf" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+curl -fsS -b "$COOKIE" "$BASE/api/auth/me"
+
+# ADMIN만 발급 가능. EMPLOYEE / REVIEWER / ADMIN 중 명시적으로 선택합니다.
+curl -fsS -b "$COOKIE" -H "X-CSRF-TOKEN: $CSRF" -H 'Content-Type: application/json' \
+  -d '{"loginId":"employee-one","name":"테스트 직원","role":"EMPLOYEE"}' \
+  "$BASE/api/employees" -o invite.json
+```
+
+응답의 `setupToken`은 256비트 난수이고 DB에는 SHA-256 해시만 저장합니다. 직원에게 안전한 별도 경로로 전달합니다(이메일 발송 없음). 토큰은 24시간 후 만료되며 한 번만 사용할 수 있습니다. 비밀번호는 BCrypt 비용 12로 저장하고 응답·로그에 해시를 노출하지 않습니다. 비밀번호 설정 전에는 로그인할 수 없습니다.
+
+### 직원의 최초 비밀번호 설정
+
+직원은 로그인 전에 **자기 쿠키 저장소**와 CSRF 토큰으로 설정합니다. 관리자와 직원의 쿠키 파일을 섞지 않습니다.
+
+```bash
+EMPLOYEE_COOKIE=$(mktemp)
+SETUP_REQUEST=$(mktemp)
+python3 - "$SETUP_REQUEST" <<'PY'
+import getpass, json, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(json.dumps({
+    "token": getpass.getpass("전달받은 설정 토큰: "),
+    "password": getpass.getpass("새 비밀번호: ")}))
+PY
+EMPLOYEE_CSRF=$(curl -fsS -c "$EMPLOYEE_COOKIE" "$BASE/api/auth/csrf" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+curl -i -b "$EMPLOYEE_COOKIE" -H "X-CSRF-TOKEN: $EMPLOYEE_CSRF" \
+  -H 'Content-Type: application/json' --data-binary "@$SETUP_REQUEST" "$BASE/api/auth/password"
+rm -f "$SETUP_REQUEST" invite.json
+```
+
+이후 로그인 예시에서 `loginId=employee-one`과 직원의 비밀번호·쿠키 파일을 사용합니다. 비활성 계정은 로그인·비밀번호 설정이 거절되고 기존 세션도 다음 요청에서 폐기됩니다. ADMIN은 `PATCH /api/employees/{id}/active`에 `{"active":false}`로 비활성화할 수 있으며 자기 자신은 비활성화할 수 없습니다.
+
+## 영수증 API와 접근 정책
+
+`X-Company-Id`는 인증 근거가 아니며 HTTP 접수에서는 **무시**합니다. 신규 회사 값은 서버에서 `internal`로 고정합니다. 제출자·검토자는 로그인한 직원으로 결정하며 감사 행위자는 `employee:<직원 ID>`로 기록합니다. 클라이언트의 미지원 `reviewerId`/`ownerEmployeeId` 필드는 권한이나 행위자에 영향을 주지 않습니다.
+
+| 역할 | 조회·감사 이력 | 필드 수정 | 승인·반려 |
+|---|---|---|---|
+| EMPLOYEE | 본인만 | 본인 + NEEDS_REVIEW / NEEDS_RECAPTURE / UNREADABLE / MANUAL_ENTRY | 불가 |
+| REVIEWER | 소유자가 있는 모든 영수증 | 추출 완료 후, 최종 처리 전 | 추출 완료 후, 최종 처리 전 |
+| ADMIN | 전체 + 격리된 과거 자료 | REVIEWER와 동일, 소유자 없는 과거 자료는 불가 | REVIEWER와 동일, 소유자 없는 과거 자료는 불가 |
+
+다른 직원의 영수증·감사 이력은 일반 직원에게 `404`를 반환합니다. 추출 대기 중이거나 APPROVED/REJECTED이면 수정할 수 없습니다. NEEDS_RECAPTURE/UNREADABLE은 필드를 보완해야 결정할 수 있습니다. 수정·결정은 최신 `version`을 요구하며 충돌하면 `409`입니다.
+
+아래 `COOKIE`, `CSRF`는 **로그인 후 갱신한** 해당 직원의 값입니다. 응답 ID와 최신 version을 실제 값으로 바꿔 사용합니다.
+
+```bash
+curl -i -b "$COOKIE" -H "X-CSRF-TOKEN: $CSRF" \
   -H 'Idempotency-Key: upload-001' \
-  -F 'file=@samples/synthetic-receipt.png;type=image/png'
+  -F 'file=@samples/synthetic-receipt.png;type=image/png' "$BASE/api/receipts"
+curl -fsS -b "$COOKIE" "$BASE/api/receipts/1"
+curl -fsS -b "$COOKIE" "$BASE/api/receipts/1/audit-events"
+curl -i -X PATCH -b "$COOKIE" -H "X-CSRF-TOKEN: $CSRF" -H 'Content-Type: application/json' \
+  -d '{"version":1,"merchant":"수정 상점"}' "$BASE/api/receipts/1/fields"
+# REVIEWER 또는 ADMIN 세션으로만 가능. reviewerId를 전달하지 않습니다.
+curl -i -b "$COOKIE" -H "X-CSRF-TOKEN: $CSRF" -H 'Content-Type: application/json' \
+  -d '{"version":2,"decision":"APPROVE","note":"증빙 확인"}' "$BASE/api/receipts/1/decision"
+curl -i -b "$COOKIE" -H "X-CSRF-TOKEN: $CSRF" -X POST "$BASE/api/auth/logout"
+rm -f "$COOKIE" "$EMPLOYEE_COOKIE"
 ```
 
-신규 접수 응답에는 `receiptId`, `jobId`, `jobStatus`, `acceptedAt`이 포함됩니다. 아래 `1`을 응답의 `receiptId`로 바꿔 조회합니다.
+신규 접수는 `202`와 receiptId/jobId/jobStatus/acceptedAt을 반환하고, 소유자의 재전송은 `200`입니다. 이미지/멱등성 키 유니크 제약은 회사 전체에 유지합니다. **다른 소유자와 충돌하면 식별자·감사 정보를 반환하거나 원본을 변경하지 않고 `409`로 거절**합니다. 빠른 조회, 잠금 내부, DB 유니크 충돌 복구 경로 모두 같은 소유권 검사를 수행합니다.
 
-```bash
-curl http://localhost:8080/api/receipts/1
-```
+### 기존 소유자 없는 자료 이관
 
-현재 업로드 API는 `X-Company-Id`를 요구합니다. 이 값은 기존 데이터 구분을 위한 입력값이며 인증이나 접근 권한 검사를 대신하지 않습니다. 한 회사 내부 사용을 위한 직원 계정·영수증 소유자 연결은 개발 예정입니다.
+Flyway V5는 기존 영수증·회사 값·추출 작업·감사 이력·멱등성 키를 보존하고 `owner_employee_id=NULL`로 남깁니다. 이 자료는 **관리자 읽기 전용 격리 보관**으로 이관합니다. 일반 직원과 REVIEWER는 접근할 수 없고 중복 업로드로 소유권을 얻을 수도 없습니다. 미완료 Worker 추출은 계속 처리될 수 있지만 사람이 수정·승인·반려할 수는 없습니다.
 
-### 실제 AI 추출 사용
+회사 헤더나 과거 문자열 actor로 소유자를 추정하지 않습니다. 소유권 변경 API는 없습니다. 실제 소유자가 확인되어 재배정이 필요하면 증빙·대상 ID·작업자·전후 감사 기록·백업·충돌 확인을 포함하는 별도 검토된 데이터 이관을 수행해야 합니다. 확인되지 않은 자료는 격리 보존합니다.
 
-실행할 셸 또는 IDE에 아래 환경변수를 설정합니다. API 키와 모델 ID는 사용하는 계정에 맞게 입력합니다.
-
-```bash
-export RECEIPT_EXTRACTOR_PROVIDER=openai
-export OPENAI_API_KEY='<API 키>'
-export OPENAI_MODEL='<사용할 모델 ID>'
-export OPENAI_BASE_URL='https://api.openai.com'
-./gradlew bootRun
-```
-
-현재 설정에서는 모델과 URL의 환경변수 미지정 값이 빈 문자열이므로 둘 다 명시해야 합니다. 전체 환경변수 목록은 [.env.example](.env.example)을 참고하고, 실행 프로세스에 필요한 값을 전달합니다.
-
-## 현재 API
+## API 목록
 
 | Method | Endpoint | 기능 |
 |---|---|---|
-| `POST` | `/api/receipts` | 이미지 접수. 신규 요청은 `202`, 기존 결과 반환은 `200` |
-| `GET` | `/api/receipts/{id}` | 영수증 데이터·검증 결과·작업 상태 조회 |
-| `PATCH` | `/api/receipts/{id}/fields` | 추출 필드 수정과 규칙 재검증 |
-| `POST` | `/api/receipts/{id}/decision` | `APPROVE` 또는 `REJECT` 결정 |
-| `GET` | `/api/receipts/{id}/audit-events` | 감사 이력 조회 |
+| GET | `/api/auth/csrf` | 익명 CSRF 토큰 발급 |
+| POST | `/api/auth/login` | form-urlencoded loginId/password 로그인 |
+| POST | `/api/auth/logout` | 세션 폐기 |
+| GET | `/api/auth/me` | 현재 직원·역할·활성 상태 |
+| POST | `/api/auth/password` | token/password로 최초 비밀번호 설정 |
+| POST | `/api/employees` | ADMIN 계정 발급, 설정 토큰 한 번 반환 |
+| PATCH | `/api/employees/{id}/active` | ADMIN 활성 상태 변경 |
+| POST | `/api/receipts` | 이미지 접수 |
+| GET | `/api/receipts/{id}` | 영수증·규칙·작업 상태 조회 |
+| GET | `/api/receipts/{id}/audit-events` | 감사 이력 조회 |
+| PATCH | `/api/receipts/{id}/fields` | 필드 수정·재검증 |
+| POST | `/api/receipts/{id}/decision` | APPROVE / REJECT |
 
-수정·결정 요청은 최신 `version`을 전달해야 하며 버전 충돌은 `409 Conflict`로 반환합니다. 현재 `reviewerId`는 요청 본문으로 받습니다. 인증 도입 시 로그인한 사용자 정보로 검수자를 결정하도록 변경할 계획입니다.
+Actuator health는 익명 접근 가능하며 다른 관측 엔드포인트는 ADMIN 인증이 필요합니다. 기존 Prometheus/k6 설정은 인증 전 예시이므로 현재 API를 사용하려면 세션·CSRF 처리를 추가해야 합니다.
 
-## 다음 개발 및 검증 계획
-
-아래 항목은 **개발·측정 예정**이며, 완료된 기능이나 성능 성과가 아닙니다.
-
-### 1. 직원 계정과 사용 권한
-
-- 관리자 계정 발급, 직원 비밀번호 설정 및 로그인
-- 로그인한 직원과 제출 영수증 연결, 본인 내역 접근 제한
-- 담당 검수자의 조회·수정·승인·반려 권한
-- 실제 작업자 신원을 기준으로 감사 이력 기록
-
-### 2. 승인·동시 검수의 정합성
-
-- 필수 데이터 누락 시 승인을 차단하는 조건 정의
-- 필드 수정과 중복 제출 후에도 품질 상태·중복 판정이 유지되도록 보완
-- 같은 버전으로 수정·승인이 동시에 요청될 때 결과와 충돌 응답 검증
-- 변경 실패 시 업무 데이터와 감사 이력의 부분 저장 여부 검증
-
-검증 시나리오와 요청 수를 명시하고, 잘못 허용된 승인 건수, 변경 성공·충돌 건수, 데이터·감사 이력 불일치 건수를 기록합니다.
-
-### 3. 검수 목록·경비 집계의 조회 성능
-
-- 본인 제출 내역, 검수 대기 목록과 기간·직원·상태별 검색 구현
-- 월별 승인 금액 집계 구현
-- 테스트 데이터 규모와 부하 조건을 고정하고 쿼리 실행계획으로 병목 확인
-- 필요한 쿼리·인덱스·페이지네이션 개선 후 동일 조건으로 재측정
-
-조회 응답시간 p95, 쿼리 실행시간, 읽은 행 수와 오류율을 비교하고 결과의 정확성도 함께 검증합니다. 접수 응답시간과 추출 완료시간은 별도 지표로 다룹니다.
-
-## 테스트와 관측
+## 테스트와 남은 제한
 
 ```bash
-./gradlew test
+bash scripts/cloud/verify.sh
 ```
 
-규칙 검증, API, 동시 업로드, 재시도, Worker 처리와 검수 버전 충돌을 테스트합니다. MySQL·Redis 통합 테스트는 Testcontainers로 실행하며, Docker가 없으면 해당 테스트는 건너뜁니다.
+실제 MySQL 8.4/Redis 7.2를 Testcontainers로 실행합니다. 이 스크립트는 Docker daemon, 기존 MySQL 회귀·신규 계정 권한·데이터 이관 테스트의 실행 여부, 실패·오류·건너뜀 0을 확인합니다. Docker 부재로 기존 테스트 일부가 건너뛰면 검증 실패이며 신규 권한·이관 테스트는 Docker 없이 실행할 수 없습니다. 과거 환경 준비 당시의 29개 통과를 새 구현의 검증 결과로 재사용하지 않습니다. 실제 실행 결과는 [검증 기록](docs/EMPLOYEE_AUTH_VERIFICATION.md)에 남깁니다.
 
-- [자동화 테스트](src/test/java/com/example/receipt/): 규칙·API·작업 처리 테스트
-- [부하 테스트](load/): 동일 이미지 반복 요청과 고유 이미지 접수용 k6 스크립트
-- [관측 설정](monitoring/): Prometheus 수집 및 Grafana 대시보드
+현재 범위에 포함되지 않은 항목:
 
-현재 k6 스크립트와 과거 성능 기록은 업로드·Worker 처리 검증용입니다. 새로 계획한 직원별 검수 목록·집계 성능의 측정 결과는 아직 없습니다.
+- 이메일·프런트엔드·멀티테넌트, 목록·집계, 다중 서버 세션 공유.
+- 비밀번호 분실 재설정, 만료된 초대 재발급, 로그인 시도 속도 제한. 실제 운영 전 계정 복구 절차를 추가해야 합니다.
+- 필수 데이터 누락 영수증의 승인 규칙, 같은 멱등성 키에 다른 파일을 보내는 요청 계약 등 기존 업무 규칙 보완.
+- 추출 오류별 재시도 구분·Lease 복구 전체 시도 상한, 로컬 이미지 저장소의 운영 구성.
 
-## 현재 제한과 우선 보완 사항
-
-- 필수 데이터가 없는 영수증의 승인과, 중복 제출·수정에 따른 상태·중복 판정 변경 경로를 보완해야 합니다.
-- 같은 멱등성 키에 다른 파일을 보내는 경우와 중복 이미지에 새 키를 붙이는 경우의 요청 계약을 보완해야 합니다.
-- 추출 오류 유형별 재시도 구분과 Lease 만료 복구의 전체 시도 상한이 없습니다.
-- 이미지는 로컬 파일로 저장하며, 품질 검사는 디코딩 가능 여부와 최소 해상도를 기준으로 합니다.
+실제 AI 추출을 별도로 사용하려면 `.env.example`에 설명된 `RECEIPT_EXTRACTOR_PROVIDER=openai`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL`을 실행 환경에 제공합니다. 이 구현·검증에서는 외부 AI를 호출하지 않습니다. OpenAI 어댑터 회귀 테스트도 로컬 가짜 HTTP 서버만 사용합니다.
 
 ## 관련 문서
 
-| 문서 | 내용 |
-|---|---|
-| [클라우드 실행 준비](docs/CLOUD_TASK.md) | Your dot·Codex Cloud 환경 요구사항, 직원 계정·인증·접근 권한 구현 범위와 검증 기준 |
-| [기존 README](docs/README_LEGACY.md) | 문서 재정리 이전의 프로젝트 설명과 설계 기록 |
-| [기존 성능·부하 테스트 기록](docs/PERFORMANCE_TEST_RESULTS.md) | Fake 추출기·합성 이미지 환경에서 기록한 업로드·Worker 전후 비교 |
-| [기존 프로젝트 진단](docs/PROJECT_REVIEW.md) | 2026-09-28 기준 코드 검토와 개선 제안 |
+- [클라우드 작업 범위](docs/CLOUD_TASK.md)
+- [구현 검증 기록](docs/EMPLOYEE_AUTH_VERIFICATION.md)
+- [기존 README](docs/README_LEGACY.md)
+- [기존 성능 기록](docs/PERFORMANCE_TEST_RESULTS.md)
+- [기존 프로젝트 진단](docs/PROJECT_REVIEW.md)
 
-기존 문서는 당시의 구현·검토·측정 기록으로 보관합니다. 현재 개발 방향은 이 README를 기준으로 하며, 과거 Fake 환경의 성능 수치를 실제 AI 추출 성능으로 해석하지 않습니다.
+과거 문서는 당시의 구현·측정 기록입니다. Fake 환경의 수치를 실제 AI 성능으로 해석하지 않습니다.

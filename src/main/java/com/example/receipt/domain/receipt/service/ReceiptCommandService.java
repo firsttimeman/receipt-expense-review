@@ -1,5 +1,6 @@
 package com.example.receipt.domain.receipt.service;
 
+import com.example.receipt.domain.employee.model.EmployeeRole;
 import com.example.receipt.domain.receipt.dto.FieldCorrections;
 import com.example.receipt.domain.receipt.entity.AuditEvent;
 import com.example.receipt.domain.receipt.entity.Receipt;
@@ -31,6 +32,8 @@ public class ReceiptCommandService {
     private static final Set<String> CLEARABLE_FIELDS = Set.of(
             "merchant", "date", "totalAmount", "businessRegistrationNumber", "paymentMethod", "lineItems");
 
+    private final ReceiptAccess access;
+    private final com.example.receipt.domain.employee.service.CurrentEmployee current;
     private final ReceiptRepository receiptRepository;
     private final AuditEventRepository auditRepository;
     private final ValidationEngine validationEngine;
@@ -38,13 +41,14 @@ public class ReceiptCommandService {
     private final Clock clock;
 
     @Transactional
-    public Receipt correctFields(Long receiptId, long expectedVersion, String reviewerId,
+    public Receipt correctFields(Long receiptId, long expectedVersion,
                                  FieldCorrections corrections) {
         if (!CLEARABLE_FIELDS.containsAll(corrections.getClearFields())) {
             throw new IllegalArgumentException("지원하지 않는 clearFields 값이 포함되어 있습니다.");
         }
         Receipt receipt = get(receiptId);
-        ensureVersion(receipt, expectedVersion); // version lock 처리하기
+        access.modify(receipt);
+        ensureVersion(receipt, expectedVersion);
         ensureNotTerminal(receipt);
 
         ReceiptData before = receipt.currentData();
@@ -54,11 +58,18 @@ public class ReceiptCommandService {
         List<RuleResult> results = validationEngine.validate(after, duplicate);
         ReceiptStatus previousStatus = receipt.status();
         ReceiptStatus nextStatus = statusRouter.route(after, results);
+        if (nextStatus == ReceiptStatus.AUTO_APPROVED) {
+            var employee = current.require();
+            // 직원 보정과 본인 영수증 보정은 규칙을 통과해도 다른 검수자의 확인이 필요합니다.
+            if (employee.role() == EmployeeRole.EMPLOYEE || employee.id().equals(receipt.ownerEmployeeId())) {
+                nextStatus = ReceiptStatus.NEEDS_REVIEW;
+            }
+        }
         Instant now = Instant.now(clock);
         receipt.updateData(after, results, nextStatus, now);
 
         Map<String, Object> correctionDetails = createCorrectionDetails(before, after, results);
-        auditRepository.save(new AuditEvent(receipt.id(), now, reviewerId,
+        auditRepository.save(new AuditEvent(receipt.id(), now, current.actor(),
                 AuditAction.FIELDS_CORRECTED, previousStatus, nextStatus,
                 correctionDetails));
         receiptRepository.flush();
@@ -66,9 +77,10 @@ public class ReceiptCommandService {
     }
 
     @Transactional
-    public Receipt decide(Long receiptId, long expectedVersion, String reviewerId,
+    public Receipt decide(Long receiptId, long expectedVersion,
                           ReviewDecision decision, String note) {
         Receipt receipt = get(receiptId);
+        access.review(receipt);
         ensureVersion(receipt, expectedVersion);
         ensureNotTerminal(receipt);
         if (receipt.status() == ReceiptStatus.NEEDS_RECAPTURE || receipt.status() == ReceiptStatus.UNREADABLE) {
@@ -82,7 +94,7 @@ public class ReceiptCommandService {
         Instant now = Instant.now(clock);
         receipt.changeStatus(next, now);
         Map<String, Object> decisionDetails = createDecisionDetails(note);
-        auditRepository.save(new AuditEvent(receipt.id(), now, reviewerId,
+        auditRepository.save(new AuditEvent(receipt.id(), now, current.actor(),
                 action, previous, next, decisionDetails));
         receiptRepository.flush();
         return receipt;

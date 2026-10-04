@@ -12,6 +12,7 @@ public record ReceiptResponse(
         Long id,
         long version,
         String companyId,
+        Long ownerEmployeeId,
         ReceiptStatus status,
         ExtractionJobStatus jobStatus,
         ReceiptData originalData,
@@ -22,7 +23,7 @@ public record ReceiptResponse(
         Instant updatedAt
 ) {
     public static ReceiptResponse from(Receipt receipt, ExtractionJobStatus jobStatus) {
-        return new ReceiptResponse(receipt.id(), receipt.version(), receipt.companyId(), receipt.status(), jobStatus,
+        return new ReceiptResponse(receipt.id(), receipt.version(), receipt.companyId(), receipt.ownerEmployeeId(), receipt.status(), jobStatus,
                 receipt.originalData(), receipt.currentData(), receipt.ruleResults(),
                 new FileMetadata(receipt.originalFileName(), receipt.contentType(), receipt.fileSize(),
                         receipt.imageSha256()),

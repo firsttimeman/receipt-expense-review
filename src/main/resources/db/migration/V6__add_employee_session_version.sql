@@ -1,0 +1,1 @@
+ALTER TABLE employees ADD COLUMN session_version BIGINT NOT NULL DEFAULT 0;
