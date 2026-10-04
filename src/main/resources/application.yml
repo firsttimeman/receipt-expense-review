@@ -7,8 +7,13 @@ spring:
     password: ${DB_PASSWORD:receipt_password}
   data:
     redis:
+      repositories:
+        enabled: false
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
+  session:
+    redis:
+      namespace: ${SESSION_REDIS_NAMESPACE:receipt:session}
   jpa:
     open-in-view: false
     hibernate:
@@ -26,7 +31,17 @@ spring:
 
 receipt:
   storage:
+    provider: ${RECEIPT_IMAGE_STORAGE_PROVIDER:local}
     local-directory: ${RECEIPT_IMAGE_STORAGE_DIRECTORY:./runtime/receipt-images}
+    s3:
+      bucket: ${RECEIPT_S3_BUCKET:}
+      region: ${RECEIPT_S3_REGION:ap-northeast-2}
+      prefix: ${RECEIPT_S3_PREFIX:receipt-images}
+      endpoint: ${RECEIPT_S3_ENDPOINT:}
+      path-style-access: ${RECEIPT_S3_PATH_STYLE_ACCESS:false}
+      connect-timeout: ${RECEIPT_S3_CONNECT_TIMEOUT:3s}
+      read-timeout: ${RECEIPT_S3_READ_TIMEOUT:10s}
+      request-timeout: ${RECEIPT_S3_REQUEST_TIMEOUT:15s}
   worker:
     enabled: ${RECEIPT_WORKER_ENABLED:true}
     poll-delay-millis: ${RECEIPT_WORKER_POLL_DELAY_MILLIS:1000}
@@ -56,8 +71,9 @@ receipt:
 server:
   servlet:
     session:
-      timeout: 30m
+      timeout: ${SESSION_TIMEOUT:30m}
       cookie:
+        name: JSESSIONID
         http-only: true
         same-site: strict
         secure: ${SESSION_COOKIE_SECURE:false}

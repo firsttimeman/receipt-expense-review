@@ -1,64 +1,81 @@
 package com.example.receipt.global.config;
 
 import com.example.receipt.domain.employee.repository.EmployeeRepository;
-import jakarta.servlet.*;
-import jakarta.servlet.http.*;
-import java.io.IOException;
-import org.springframework.context.annotation.*;
+import com.example.receipt.domain.employee.security.EmployeeSessionValidationFilter;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
-import org.springframework.security.core.userdetails.*;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.intercept.AuthorizationFilter;
-import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.security.web.context.SecurityContextRepository;
+import org.springframework.security.web.csrf.CsrfTokenRepository;
 
 @Configuration
 @EnableMethodSecurity
-@org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication
+@ConditionalOnWebApplication
 public class SecurityConfiguration {
-    @Bean UserDetailsService userDetailsService(EmployeeRepository employees) {
-        return login -> employees.findByLoginId(login).filter(e -> e.passwordHash() != null)
-                .map(e -> User.withUsername(e.loginId()).password(e.passwordHash()).roles(e.role().name()).disabled(!e.active()).build())
-                .orElseThrow(() -> new UsernameNotFoundException("인증할 수 없습니다."));
-    }
-    @Bean SecurityFilterChain security(HttpSecurity http, EmployeeRepository employees) throws Exception {
-        http.authorizeHttpRequests(auth -> auth
-                .requestMatchers("/api/auth/csrf", "/api/auth/login", "/api/auth/password", "/actuator/health", "/error").permitAll()
-                .requestMatchers("/api/employees/**", "/actuator/**").hasRole("ADMIN")
-                .anyRequest().authenticated())
-            .formLogin(form -> form.loginProcessingUrl("/api/auth/login")
-                .usernameParameter("loginId").passwordParameter("password")
-                .successHandler((req, res, auth) -> res.setStatus(204))
-                .failureHandler((req, res, ex) -> res.setStatus(401)).permitAll())
-            .logout(logout -> logout.logoutUrl("/api/auth/logout")
-                .invalidateHttpSession(true).deleteCookies("JSESSIONID")
-                .logoutSuccessHandler((req, res, auth) -> res.setStatus(204)))
-            .requestCache(cache -> cache.disable())
-            .exceptionHandling(errors -> errors
-                .authenticationEntryPoint((req, res, ex) -> res.setStatus(401))
-                .accessDeniedHandler((req, res, ex) -> res.setStatus(403)))
-            .addFilterBefore(new OncePerRequestFilter() {
-                @Override protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
-                        throws ServletException, IOException {
-                    var auth = SecurityContextHolder.getContext().getAuthentication();
-                    if (auth != null && auth.isAuthenticated() && !(auth instanceof org.springframework.security.authentication.AnonymousAuthenticationToken)) {
-                        var employee = employees.findByLoginId(auth.getName());
-                        if (employee.isEmpty() || !employee.get().active() || employee.get().passwordHash() == null) {
-                            SecurityContextHolder.clearContext();
-                            if (req.getSession(false) != null) req.getSession(false).invalidate();
-                            res.setStatus(401); return;
-                        }
-                        // Re-read the role on every request; stale sessions cannot retain elevated privileges.
-                        var e = employee.get();
-                        var principal = User.withUsername(e.loginId()).password("").roles(e.role().name()).build();
-                        SecurityContextHolder.getContext().setAuthentication(
-                            UsernamePasswordAuthenticationToken.authenticated(principal, null, principal.getAuthorities()));
-                    }
-                    chain.doFilter(req, res);
-                }
-            }, AuthorizationFilter.class);
+
+    @Bean
+    SecurityFilterChain filterChain(
+            HttpSecurity http,
+            EmployeeRepository employees,
+            SecurityContextRepository securityContextRepository,
+            CsrfTokenRepository csrfTokenRepository) throws Exception {
+        // API 인증 정보는 세션에 저장하고, Spring Session을 통해 Redis에서 공유합니다.
+        http
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED))
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers(
+                                "/api/auth/csrf",
+                                "/api/auth/login",
+                                "/api/auth/password",
+                                "/actuator/health",
+                                "/error"
+                        ).permitAll()
+                        .requestMatchers("/api/employees/**", "/actuator/**").hasRole("ADMIN")
+                        .anyRequest().authenticated())
+                .csrf(csrf -> csrf.csrfTokenRepository(csrfTokenRepository))
+                .securityContext(context -> context
+                        .securityContextRepository(securityContextRepository)
+                        .requireExplicitSave(true))
+                .exceptionHandling(errors -> errors
+                        .authenticationEntryPoint(this::unauthorized)
+                        .accessDeniedHandler(this::forbidden))
+                .logout(logout -> logout
+                        .logoutUrl("/api/auth/logout")
+                        .invalidateHttpSession(true)
+                        .logoutSuccessHandler(this::loggedOut))
+                .formLogin(AbstractHttpConfigurer::disable)
+                .httpBasic(AbstractHttpConfigurer::disable)
+                .requestCache(AbstractHttpConfigurer::disable)
+                // 서블릿 필터로 중복 등록하지 않고 Spring Security 필터 체인에서만 사용합니다.
+                .addFilterBefore(new EmployeeSessionValidationFilter(employees), AuthorizationFilter.class);
+
         return http.build();
+    }
+
+    private void unauthorized(
+            HttpServletRequest request, HttpServletResponse response, AuthenticationException exception) {
+        response.setStatus(HttpStatus.UNAUTHORIZED.value());
+    }
+
+    private void forbidden(
+            HttpServletRequest request, HttpServletResponse response, AccessDeniedException exception) {
+        response.setStatus(HttpStatus.FORBIDDEN.value());
+    }
+
+    private void loggedOut(
+            HttpServletRequest request, HttpServletResponse response, Authentication authentication) {
+        response.setStatus(HttpStatus.NO_CONTENT.value());
     }
 }

@@ -1,5 +1,6 @@
 package com.example.receipt.domain.receipt.service;
 
+import com.example.receipt.domain.employee.model.EmployeeRole;
 import com.example.receipt.domain.receipt.dto.FieldCorrections;
 import com.example.receipt.domain.receipt.entity.AuditEvent;
 import com.example.receipt.domain.receipt.entity.Receipt;
@@ -57,6 +58,13 @@ public class ReceiptCommandService {
         List<RuleResult> results = validationEngine.validate(after, duplicate);
         ReceiptStatus previousStatus = receipt.status();
         ReceiptStatus nextStatus = statusRouter.route(after, results);
+        if (nextStatus == ReceiptStatus.AUTO_APPROVED) {
+            var employee = current.require();
+            // 직원 보정과 본인 영수증 보정은 규칙을 통과해도 다른 검수자의 확인이 필요합니다.
+            if (employee.role() == EmployeeRole.EMPLOYEE || employee.id().equals(receipt.ownerEmployeeId())) {
+                nextStatus = ReceiptStatus.NEEDS_REVIEW;
+            }
+        }
         Instant now = Instant.now(clock);
         receipt.updateData(after, results, nextStatus, now);
 

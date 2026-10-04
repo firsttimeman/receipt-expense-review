@@ -16,8 +16,8 @@ public record CorrectFieldsRequest(
         BigDecimal totalAmount,
         String businessRegistrationNumber,
         String paymentMethod,
-        List<LineItem> lineItems,
-        Set<String> clearFields
+        List<@NotNull LineItem> lineItems,
+        Set<@NotNull String> clearFields
 ) {
     public FieldCorrections toCorrections() {
         return new FieldCorrections(merchant, date, totalAmount, businessRegistrationNumber,

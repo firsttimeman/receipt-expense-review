@@ -7,6 +7,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.*;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -14,6 +15,11 @@ import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
+    @ExceptionHandler(AuthenticationException.class)
+    ProblemDetail unauthenticated(AuthenticationException exception) {
+        return problem(HttpStatus.UNAUTHORIZED, "인증할 수 없습니다.");
+    }
+
     @ExceptionHandler(ReceiptNotFoundException.class)
     ProblemDetail notFound(ReceiptNotFoundException exception) {
         return problem(HttpStatus.NOT_FOUND, exception.getMessage());

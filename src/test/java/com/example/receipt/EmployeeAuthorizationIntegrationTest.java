@@ -12,6 +12,10 @@ import com.example.receipt.domain.extraction.repository.ReceiptExtractionJobRepo
 import com.example.receipt.domain.extraction.service.*;
 import com.fasterxml.jackson.databind.*;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
+import jakarta.servlet.http.Cookie;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -75,15 +79,18 @@ class EmployeeAuthorizationIntegrationTest {
     private Employee employee(String login, EmployeeRole role) {
         var e = new Employee(login, login, role); e.setPassword(HASH); return employees.saveAndFlush(e);
     }
-    private MockHttpSession login(Employee e) throws Exception { return login(e.loginId(), PASSWORD); }
-    private MockHttpSession login(String name, String password) throws Exception {
-        return (MockHttpSession) mvc.perform(post("/api/auth/login").with(csrf())
-                .param("loginId", name).param("password", password))
-                .andExpect(status().isNoContent()).andReturn().getRequest().getSession(false);
+    private Cookie login(Employee e) throws Exception { return login(e.loginId(), PASSWORD); }
+    private Cookie login(String name, String password) throws Exception {
+        return mvc.perform(loginRequest(name, password).with(csrf()))
+                .andExpect(status().isNoContent()).andReturn().getResponse().getCookie("JSESSIONID");
+    }
+    private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder loginRequest(String name, String password) throws Exception {
+        return post("/api/auth/login").contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("loginId", name, "password", password)));
     }
     private JsonNode body(MvcResult result) throws Exception { return json.readTree(result.getResponse().getContentAsByteArray()); }
-    private JsonNode issue(MockHttpSession session, String name, String role, int status) throws Exception {
-        return body(mvc.perform(post("/api/employees").session(session).with(csrf())
+    private JsonNode issue(Cookie session, String name, String role, int status) throws Exception {
+        return body(mvc.perform(post("/api/employees").cookie(session).with(csrf())
                 .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(Map.of("loginId", name, "name", name, "role", role))))
                 .andExpect(status().is(status)).andReturn());
     }
@@ -91,25 +98,28 @@ class EmployeeAuthorizationIntegrationTest {
         var image = new BufferedImage(800, 800, BufferedImage.TYPE_INT_RGB); image.setRGB(0, 0, marker);
         var out = new ByteArrayOutputStream(); ImageIO.write(image, "png", out); return out.toByteArray();
     }
-    private JsonNode upload(MockHttpSession session, byte[] bytes, String key, int status) throws Exception {
-        var request = multipart("/api/receipts").file(new MockMultipartFile("file", "missing-merchant.png", "image/png", bytes))
-                .session(session).with(csrf()).param("ownerEmployeeId", b.id().toString())
+    private JsonNode upload(Cookie session, byte[] bytes, String key, int status) throws Exception {
+        return upload(session, bytes, key, "missing-merchant.png", status);
+    }
+    private JsonNode upload(Cookie session, byte[] bytes, String key, String fileName, int status) throws Exception {
+        var request = multipart("/api/receipts").file(new MockMultipartFile("file", fileName, "image/png", bytes))
+                .cookie(session).with(csrf()).param("ownerEmployeeId", b.id().toString())
                 .header("X-Employee-Id", b.id()).header("X-Company-Id", "untrusted-header").header("Idempotency-Key", key);
         return body(mvc.perform(request).andExpect(status().is(status)).andReturn());
     }
-    private JsonNode detail(MockHttpSession session, long id, int status) throws Exception {
-        return body(mvc.perform(get("/api/receipts/{id}", id).session(session)).andExpect(status().is(status)).andReturn());
+    private JsonNode detail(Cookie session, long id, int status) throws Exception {
+        return body(mvc.perform(get("/api/receipts/{id}", id).cookie(session)).andExpect(status().is(status)).andReturn());
     }
     private void process(long id) {
         var job = claims.claimAvailable("auth-test", 20, Duration.ofSeconds(30)).stream().filter(j -> j.receiptId().equals(id)).findFirst().orElseThrow();
         processor.process(job);
     }
-    private ResultActions correction(MockHttpSession session, long id, long version) throws Exception {
-        return mvc.perform(patch("/api/receipts/{id}/fields", id).session(session).with(csrf())
+    private ResultActions correction(Cookie session, long id, long version) throws Exception {
+        return mvc.perform(patch("/api/receipts/{id}/fields", id).cookie(session).with(csrf())
                 .contentType(MediaType.APPLICATION_JSON).content("{\"version\":"+version+",\"merchant\":\"corrected\",\"reviewerId\":\"forged-user\"}"));
     }
-    private ResultActions decision(MockHttpSession session, long id, long version, String decision) throws Exception {
-        return mvc.perform(post("/api/receipts/{id}/decision", id).session(session).with(csrf())
+    private ResultActions decision(Cookie session, long id, long version, String decision) throws Exception {
+        return mvc.perform(post("/api/receipts/{id}/decision", id).cookie(session).with(csrf())
                 .contentType(MediaType.APPLICATION_JSON).content("{\"version\":"+version+",\"decision\":\""+decision+"\",\"reviewerId\":\"forged-user\"}"));
     }
 
@@ -119,50 +129,54 @@ class EmployeeAuthorizationIntegrationTest {
         assertThat(issued.path("setupToken").asText()).hasSize(43);
         assertThat(issued.toString()).doesNotContain("passwordHash", "setupTokenHash");
         issue(session, "new-user", "EMPLOYEE", 409);
-        mvc.perform(post("/api/employees").session(login(a)).with(csrf()).contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/api/employees").cookie(login(a)).with(csrf()).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"loginId\":\"bad-admin\",\"name\":\"bad\",\"role\":\"ADMIN\"}"))
                 .andExpect(status().isForbidden());
-        mvc.perform(post("/api/employees").session(login(reviewer)).with(csrf()).contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/api/employees").cookie(login(reviewer)).with(csrf()).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"loginId\":\"bad-admin\",\"name\":\"bad\",\"role\":\"ADMIN\"}"))
                 .andExpect(status().isForbidden());
     }
 
     @Test void setupLoginLogoutAndInvalidCredentials() throws Exception {
         String token = issue(login(admin), "invited", "EMPLOYEE", 201).path("setupToken").asText();
-        mvc.perform(post("/api/auth/login").with(csrf()).param("loginId", "invited").param("password", PASSWORD)).andExpect(status().isUnauthorized());
+        mvc.perform(loginRequest("invited", PASSWORD).with(csrf())).andExpect(status().isUnauthorized());
         String request = json.writeValueAsString(Map.of("token", token, "password", PASSWORD));
         mvc.perform(post("/api/auth/password").with(csrf()).contentType(MediaType.APPLICATION_JSON).content(request)).andExpect(status().isNoContent());
         mvc.perform(post("/api/auth/password").with(csrf()).contentType(MediaType.APPLICATION_JSON).content(request)).andExpect(status().isBadRequest());
         assertThat(employees.findByLoginId("invited").orElseThrow().passwordHash()).startsWith("$2a$").isNotEqualTo(PASSWORD);
         var session = login("invited", PASSWORD);
-        mvc.perform(get("/api/auth/me").session(session)).andExpect(status().isOk()).andExpect(jsonPath("$.loginId").value("invited"));
-        mvc.perform(post("/api/auth/login").with(csrf()).param("loginId", "invited").param("password", "wrong")).andExpect(status().isUnauthorized());
-        mvc.perform(post("/api/auth/login").with(csrf()).param("loginId", "unknown").param("password", PASSWORD)).andExpect(status().isUnauthorized());
-        mvc.perform(post("/api/auth/logout").session(session).with(csrf())).andExpect(status().isNoContent());
-        assertThat(session.isInvalid()).isTrue();
+        mvc.perform(get("/api/auth/me").cookie(session)).andExpect(status().isOk()).andExpect(jsonPath("$.loginId").value("invited"));
+        mvc.perform(loginRequest("invited", "wrong").with(csrf())).andExpect(status().isUnauthorized());
+        mvc.perform(loginRequest("unknown", PASSWORD).with(csrf())).andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/auth/logout").cookie(session).with(csrf())).andExpect(status().isNoContent());
+        mvc.perform(get("/api/auth/me").cookie(session)).andExpect(status().isUnauthorized());
         mvc.perform(get("/api/auth/me")).andExpect(status().isUnauthorized());
     }
 
     @Test void csrfIsRequiredIncludingLoginAndPasswordAndSessionRotatesOnLogin() throws Exception {
         var csrfResponse = mvc.perform(get("/api/auth/csrf")).andExpect(status().isOk()).andReturn();
-        var session = (MockHttpSession) csrfResponse.getRequest().getSession(false);
-        String oldId = session.getId(); JsonNode token = body(csrfResponse);
-        mvc.perform(post("/api/auth/login").session(session).param("loginId", a.loginId()).param("password", PASSWORD)).andExpect(status().isForbidden());
+        Cookie anonymousSession = csrfResponse.getResponse().getCookie("JSESSIONID");
+        JsonNode token = body(csrfResponse);
+        mvc.perform(loginRequest(a.loginId(), PASSWORD).cookie(anonymousSession)).andExpect(status().isForbidden());
         mvc.perform(post("/api/auth/password").contentType(MediaType.APPLICATION_JSON).content("{}")).andExpect(status().isForbidden());
-        mvc.perform(post("/api/auth/login").session(session).header(token.path("headerName").asText(), token.path("token").asText())
-                .param("loginId", a.loginId()).param("password", PASSWORD)).andExpect(status().isNoContent());
-        assertThat(session.getId()).isNotEqualTo(oldId);
-        mvc.perform(post("/api/auth/logout").session(session)).andExpect(status().isForbidden());
-        mvc.perform(get("/api/auth/me").session(session)).andExpect(status().isOk());
+        Cookie authenticatedSession = mvc.perform(loginRequest(a.loginId(), PASSWORD).cookie(anonymousSession)
+                        .header(token.path("headerName").asText(), token.path("token").asText()))
+                .andExpect(status().isNoContent()).andReturn().getResponse().getCookie("JSESSIONID");
+        assertThat(authenticatedSession.getValue()).isNotEqualTo(anonymousSession.getValue());
+        mvc.perform(get("/api/auth/me").cookie(anonymousSession)).andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/auth/logout").cookie(authenticatedSession)).andExpect(status().isForbidden());
+        mvc.perform(post("/api/auth/logout").cookie(authenticatedSession)
+                .header(token.path("headerName").asText(), token.path("token").asText())).andExpect(status().isForbidden());
+        mvc.perform(get("/api/auth/me").cookie(authenticatedSession)).andExpect(status().isOk());
     }
 
     @Test void inactiveAccountCannotLoginUseSessionOrSetPassword() throws Exception {
         var userSession = login(a); var adminSession = login(admin);
-        mvc.perform(patch("/api/employees/{id}/active", a.id()).session(adminSession).with(csrf())
+        mvc.perform(patch("/api/employees/{id}/active", a.id()).cookie(adminSession).with(csrf())
                 .contentType(MediaType.APPLICATION_JSON).content("{\"active\":false}")).andExpect(status().isOk());
-        mvc.perform(get("/api/auth/me").session(userSession)).andExpect(status().isUnauthorized());
-        assertThat(userSession.isInvalid()).isTrue();
-        mvc.perform(post("/api/auth/login").with(csrf()).param("loginId", a.loginId()).param("password", PASSWORD)).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/auth/me").cookie(userSession)).andExpect(status().isUnauthorized())
+                .andExpect(cookie().maxAge("JSESSIONID", 0));
+        mvc.perform(loginRequest(a.loginId(), PASSWORD).with(csrf())).andExpect(status().isUnauthorized());
         var issued = issue(adminSession, "inactive-invite", "EMPLOYEE", 201);
         var e = employees.findById(issued.path("employee").path("id").asLong()).orElseThrow(); e.setActive(false); employees.saveAndFlush(e);
         mvc.perform(post("/api/auth/password").with(csrf()).contentType(MediaType.APPLICATION_JSON)
@@ -226,7 +240,7 @@ class EmployeeAuthorizationIntegrationTest {
         assertThat(detail(sa, id, 200).path("companyId").asText()).isEqualTo("internal");
         assertThat(audits.findByReceiptIdOrderByOccurredAtAsc(id).get(0).actor()).isEqualTo("employee:"+a.id());
         detail(sb, id, 404);
-        mvc.perform(get("/api/receipts/{id}/audit-events", id).session(sb)).andExpect(status().isNotFound());
+        mvc.perform(get("/api/receipts/{id}/audit-events", id).cookie(sb)).andExpect(status().isNotFound());
         correction(sb, id, 0).andExpect(status().isNotFound());
         mvc.perform(get("/api/receipts/{id}", id).header("X-Company-Id", "internal")).andExpect(status().isUnauthorized());
         mvc.perform(get("/api/receipts/{id}/audit-events", id)).andExpect(status().isUnauthorized());
@@ -238,6 +252,83 @@ class EmployeeAuthorizationIntegrationTest {
         decision(sa, id, version, "REJECT").andExpect(status().isForbidden());
     }
 
+    @ParameterizedTest
+    @EnumSource(EmployeeRole.class)
+    void submitterCorrectionRequiresAnotherReviewerEvenWhenAllRulesPass(EmployeeRole role) throws Exception {
+        Employee owner = switch (role) {
+            case EMPLOYEE -> a;
+            case REVIEWER -> reviewer;
+            case ADMIN -> admin;
+        };
+        var session = login(owner);
+        long id = upload(session, png(60), "owner-correction", "over-limit.png", 202)
+                .path("receiptId").asLong();
+        process(id);
+        JsonNode before = detail(session, id, 200);
+        assertThat(before.path("status").asText()).isEqualTo("NEEDS_REVIEW");
+        assertThat(before.path("currentData").path("totalAmount").decimalValue()).isEqualByComparingTo("500000");
+
+        JsonNode corrected = body(mvc.perform(patch("/api/receipts/{id}/fields", id).cookie(session).with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("version", before.path("version").asLong(),
+                                "totalAmount", 12000))))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(corrected.path("status").asText()).isEqualTo("NEEDS_REVIEW");
+        assertThat(corrected.path("currentData").path("totalAmount").decimalValue()).isEqualByComparingTo("12000");
+        assertThat(corrected.path("originalData").path("totalAmount").decimalValue()).isEqualByComparingTo("500000");
+        assertThat(corrected.path("ruleResults")).allSatisfy(rule ->
+                assertThat(rule.path("outcome").asText()).isNotEqualTo("FAIL"));
+        assertThat(audits.findByReceiptIdOrderByOccurredAtAsc(id))
+                .noneMatch(event -> event.action().name().equals("REVIEW_APPROVED"));
+
+        Employee approver = owner.id().equals(reviewer.id()) ? admin : reviewer;
+        JsonNode approved = body(decision(login(approver), id, corrected.path("version").asLong(), "APPROVE")
+                .andExpect(status().isOk()).andReturn());
+        assertThat(approved.path("status").asText()).isEqualTo("APPROVED");
+        assertThat(audits.findByReceiptIdOrderByOccurredAtAsc(id))
+                .filteredOn(event -> event.action().name().equals("REVIEW_APPROVED"))
+                .singleElement().satisfies(event -> assertThat(event.actor()).isEqualTo("employee:" + approver.id()));
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = EmployeeRole.class, names = {"REVIEWER", "ADMIN"})
+    void reviewerAndAdminCannotApproveOrRejectTheirOwnReceipt(EmployeeRole role) throws Exception {
+        Employee owner = role == EmployeeRole.ADMIN ? admin : reviewer;
+        var session = login(owner);
+        long id = upload(session, png(61), "self-review", "over-limit.png", 202)
+                .path("receiptId").asLong();
+        process(id);
+        long version = receipts.findById(id).orElseThrow().version();
+        long auditCount = audits.count();
+
+        decision(session, id, version, "APPROVE").andExpect(status().isForbidden());
+        decision(session, id, version, "REJECT").andExpect(status().isForbidden());
+
+        var unchanged = receipts.findById(id).orElseThrow();
+        assertThat(unchanged.status()).isEqualTo(ReceiptStatus.NEEDS_REVIEW);
+        assertThat(unchanged.version()).isEqualTo(version);
+        assertThat(audits.count()).isEqualTo(auditCount);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"clearFields", "lineItems"})
+    void nullCorrectionElementsAreBadRequestsAndDoNotChangeReceipt(String field) throws Exception {
+        var session = login(a);
+        long id = upload(session, png(62), "invalid-elements", 202).path("receiptId").asLong();
+        process(id);
+        long version = receipts.findById(id).orElseThrow().version();
+        long auditCount = audits.count();
+        String request = "{\"version\":" + version + ",\"" + field + "\":[null]}";
+
+        mvc.perform(patch("/api/receipts/{id}/fields", id).cookie(session).with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value("요청 값이 올바르지 않습니다."));
+
+        assertThat(receipts.findById(id).orElseThrow().version()).isEqualTo(version);
+        assertThat(audits.count()).isEqualTo(auditCount);
+    }
+
     @Test void actualReviewerIsAuditedForCorrectionApprovalAndRejection() throws Exception {
         var sa = login(a); var sr = login(reviewer);
         for (int i=0; i<2; i++) {
@@ -247,7 +338,7 @@ class EmployeeAuthorizationIntegrationTest {
             var events = audits.findByReceiptIdOrderByOccurredAtAsc(id);
             assertThat(events.stream().filter(e -> e.action().name().startsWith("REVIEW_") || e.action().name().equals("FIELDS_CORRECTED")))
                     .hasSize(2).allMatch(e -> e.actor().equals("employee:"+reviewer.id()));
-            mvc.perform(get("/api/receipts/{id}/audit-events", id).session(sr)).andExpect(status().isOk());
+            mvc.perform(get("/api/receipts/{id}/audit-events", id).cookie(sr)).andExpect(status().isOk());
             correction(sa, id, receipts.findById(id).orElseThrow().version()).andExpect(status().isConflict());
         }
     }
@@ -258,7 +349,7 @@ class EmployeeAuthorizationIntegrationTest {
         long version = receipts.findById(id).orElseThrow().version();
         upload(sb, png(31), "shared-key", 409); // idempotency fast path
         mvc.perform(multipart("/api/receipts").file(new MockMultipartFile("file", "same.png", "image/png", image))
-                .session(sb).with(csrf()).header("X-Company-Id", "different-company").header("Idempotency-Key", "shared-key"))
+                .cookie(sb).with(csrf()).header("X-Company-Id", "different-company").header("Idempotency-Key", "shared-key"))
                 .andExpect(status().isConflict());
         upload(sb, image, "different-key", 409); // before duplicate marking
         assertThat(receipts.findById(id).orElseThrow().version()).isEqualTo(version);
@@ -281,7 +372,7 @@ class EmployeeAuthorizationIntegrationTest {
                 futures.add(executor.submit(() -> {
                     start.await();
                     return mvc.perform(multipart("/api/receipts").file(new MockMultipartFile("file", "receipt.png", "image/png", image))
-                            .session(session).with(csrf()).header("Idempotency-Key", "race-key")).andReturn();
+                            .cookie(session).with(csrf()).header("Idempotency-Key", "race-key")).andReturn();
                 }));
             }
             start.countDown(); var responses = List.of(futures.get(0).get(20, TimeUnit.SECONDS), futures.get(1).get(20, TimeUnit.SECONDS));
@@ -297,7 +388,7 @@ class EmployeeAuthorizationIntegrationTest {
         process(id);
         detail(login(a), id, 404); detail(login(reviewer), id, 404);
         var adminSession = login(admin); detail(adminSession, id, 200);
-        mvc.perform(get("/api/receipts/{id}/audit-events", id).session(adminSession)).andExpect(status().isOk());
+        mvc.perform(get("/api/receipts/{id}/audit-events", id).cookie(adminSession)).andExpect(status().isOk());
         long version = receipts.findById(id).orElseThrow().version();
         correction(adminSession, id, version).andExpect(status().isConflict());
         decision(adminSession, id, version, "APPROVE").andExpect(status().isConflict());

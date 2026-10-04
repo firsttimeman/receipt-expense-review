@@ -1,28 +1,18 @@
 package com.example.receipt.global.storage;
 
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.annotation.Profile;
-import org.springframework.stereotype.Component;
-
 import java.io.IOException;
 import java.nio.file.*;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
 
-@Component
-@Profile("!test")
 public class LocalReceiptImageStorage implements ReceiptImageStorage {
     private final Path root;
 
-    public LocalReceiptImageStorage(@Value("${receipt.storage.local-directory:./runtime/receipt-images}") String directory) {
+    public LocalReceiptImageStorage(String directory) {
         this.root = Path.of(directory).toAbsolutePath().normalize();
     }
 
     @Override
     public String store(String companyId, String imageSha256, byte[] bytes) {
-        String companyHash = sha256(companyId.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        String storageKey = companyHash.substring(0, 16) + "/" + imageSha256 + ".bin";
+        String storageKey = ReceiptImageKey.create(companyId, imageSha256);
         Path target = resolveSafely(storageKey);
         try {
             Files.createDirectories(target.getParent());
@@ -63,11 +53,4 @@ public class LocalReceiptImageStorage implements ReceiptImageStorage {
         return resolved;
     }
 
-    private String sha256(byte[] bytes) {
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("SHA-256을 사용할 수 없습니다.", exception);
-        }
-    }
 }

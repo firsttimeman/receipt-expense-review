@@ -35,11 +35,25 @@ class EmployeeMigrationIntegrationTest {
                 VALUES (1,'QUEUED','historical-image',NOW(),NOW(),NOW())
                 """);
         }
+        var employeeMigration = Flyway.configure().dataSource(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword())
+                .target("5").load();
+        assertThat(employeeMigration.migrate().migrationsExecuted).isEqualTo(1);
+        try (var connection = DriverManager.getConnection(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
+             var sql = connection.createStatement()) {
+            sql.executeUpdate("INSERT INTO employees(login_id,name,role,active) VALUES ('existing-user','existing','EMPLOYEE',true)");
+        }
+
         var flyway = Flyway.configure().dataSource(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword()).load();
         assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
         flyway.validate();
         try (var connection = DriverManager.getConnection(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
              var sql = connection.createStatement()) {
+            try (var result = sql.executeQuery("SELECT name,active,session_version FROM employees WHERE login_id='existing-user'")) {
+                assertThat(result.next()).isTrue();
+                assertThat(result.getString("name")).isEqualTo("existing");
+                assertThat(result.getBoolean("active")).isTrue();
+                assertThat(result.getLong("session_version")).isZero();
+            }
             try (var result = sql.executeQuery("SELECT owner_employee_id,company_id FROM receipts WHERE id=1")) {
                 assertThat(result.next()).isTrue(); assertThat(result.getObject(1)).isNull();
                 assertThat(result.getString(2)).isEqualTo("historical-company");

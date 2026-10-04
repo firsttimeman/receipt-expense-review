@@ -32,7 +32,11 @@ public class ReceiptAccess {
             throw new ReceiptConflictException("이 상태의 영수증은 직원이 수정할 수 없습니다.");
     }
     public void review(Receipt receipt) {
-        if (current.require().role() == EmployeeRole.EMPLOYEE) throw new AccessDeniedException("검토 권한이 필요합니다.");
+        var employee = current.require();
+        if (employee.role() == EmployeeRole.EMPLOYEE) throw new AccessDeniedException("검토 권한이 필요합니다.");
         modify(receipt);
+        if (employee.id().equals(receipt.ownerEmployeeId())) {
+            throw new AccessDeniedException("본인이 제출한 영수증은 승인하거나 반려할 수 없습니다.");
+        }
     }
 }
