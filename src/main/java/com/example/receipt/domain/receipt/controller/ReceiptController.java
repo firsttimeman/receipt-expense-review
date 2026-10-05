@@ -6,12 +6,12 @@ import com.example.receipt.domain.receipt.dto.ReceiptAcceptedResponse;
 import com.example.receipt.domain.receipt.dto.ReceiptResponse;
 import com.example.receipt.domain.receipt.dto.ReviewDecisionRequest;
 import com.example.receipt.domain.receipt.dto.UploadResult;
+import com.example.receipt.domain.receipt.dto.ReceiptListRequest;
+import com.example.receipt.domain.receipt.dto.ReceiptPageResponse;
 import com.example.receipt.domain.receipt.service.ReceiptCommandService;
 import com.example.receipt.domain.receipt.service.ReceiptQueryService;
 import com.example.receipt.domain.receipt.service.ReceiptUploadService;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.*;
@@ -32,6 +32,18 @@ public class ReceiptController {
     private final ReceiptUploadService uploadService;
     private final ReceiptQueryService queryService;
     private final ReceiptCommandService commandService;
+
+    /** 모든 역할에서 로그인한 직원 본인의 제출 목록만 반환합니다. */
+    @GetMapping
+    public ReceiptPageResponse mine(@Valid @ModelAttribute ReceiptListRequest request) {
+        return queryService.mine(request);
+    }
+
+    /** 검수자 본인 제출 건과 소유자 없는 과거 자료는 검수 대기 목록에서 제외합니다. */
+    @GetMapping("/review-queue")
+    public ReceiptPageResponse reviewQueue(@Valid @ModelAttribute ReceiptListRequest request) {
+        return queryService.reviewQueue(request);
+    }
 
     /**
      * @param idempotencyKey 동일 업로드 요청 재전송 시 중복 처리를 막는 요청 키

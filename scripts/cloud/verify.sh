@@ -43,7 +43,7 @@ if not mysql_suites or sum(int(suite.get("tests", "0")) for suite in mysql_suite
     raise SystemExit("The existing MySQL integration tests did not all run.")
 for name, minimum in (("EmployeeAuthorizationIntegrationTest", 13), ("EmployeeMigrationIntegrationTest", 1),
                       ("RedisSessionIntegrationTest", 8), ("ReceiptStorageConfigurationTest", 6),
-                      ("S3ReceiptStorageIntegrationTest", 3)):
+                      ("S3ReceiptStorageIntegrationTest", 3), ("ReceiptListingWorkflowIntegrationTest", 11)):
     matching = [s for s in suites if s.get("name", "").endswith("." + name)]
     if not matching or sum(int(s.get("tests", "0")) for s in matching) < minimum:
         raise SystemExit(f"Required integration suite did not run: {name}")

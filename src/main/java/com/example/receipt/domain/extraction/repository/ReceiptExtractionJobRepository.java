@@ -12,6 +12,8 @@ import java.util.Optional;
 public interface ReceiptExtractionJobRepository extends JpaRepository<ReceiptExtractionJob, Long> {
     Optional<ReceiptExtractionJob> findByReceiptId(Long receiptId);
 
+    List<ReceiptExtractionJob> findByReceiptIdIn(List<Long> receiptIds);
+
     @Query(value = """
             SELECT *
             FROM receipt_extraction_jobs
