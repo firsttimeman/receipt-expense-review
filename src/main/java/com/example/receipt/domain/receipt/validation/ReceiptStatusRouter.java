@@ -10,7 +10,7 @@ import java.util.List;
 @Component
 public class ReceiptStatusRouter {
     public ReceiptStatus route(ReceiptData data, List<RuleResult> results) {
-        if (data == null || (data.merchant() == null && data.date() == null && data.totalAmount() == null)) {
+        if (data == null || (data.shopName() == null && data.date() == null && data.totalAmount() == null)) {
             return ReceiptStatus.MANUAL_ENTRY;
         }
         return results.stream().anyMatch(RuleResult::failed)

@@ -117,7 +117,7 @@ class ReceiptApiIntegrationTest {
 
         assertThat(response.path("status").asText()).isEqualTo("AUTO_APPROVED");
         assertThat(response.path("jobStatus").asText()).isEqualTo("COMPLETED");
-        assertThat(response.path("originalData").path("merchant").asText()).isEqualTo("테스트상점");
+        assertThat(response.path("originalData").path("shopName").asText()).isEqualTo("테스트상점");
         assertThat(response.path("currentData").path("totalAmount").decimalValue()).isEqualByComparingTo("12000");
         assertThat(response.path("file").path("sha256").asText()).hasSize(64);
     }
@@ -136,7 +136,7 @@ class ReceiptApiIntegrationTest {
 
     @Test
     void supportsFieldCorrectionFinalDecisionAndAuditTrail() throws Exception {
-        JsonNode accepted = upload("missing-merchant.png", png(800, 1200), null, 202);
+        JsonNode accepted = upload("missing-shop-name.png", png(800, 1200), null, 202);
         process(accepted.path("receiptId").asLong());
         JsonNode uploaded = getReceipt(accepted.path("receiptId").asLong());
         String id = uploaded.path("id").asText();
@@ -144,12 +144,12 @@ class ReceiptApiIntegrationTest {
         assertThat(uploaded.path("status").asText()).isEqualTo("NEEDS_REVIEW");
 
         String correction = """
-                {"version":%d,"reviewerId":"reviewer-1","merchant":"수정된 상점"}
+                {"version":%d,"reviewerId":"reviewer-1","shopName":"수정된 상점"}
                 """.formatted(version);
         String correctedJson = mockMvc.perform(patch("/api/receipts/{id}/fields", id).cookie(sessionCookie).with(csrf())
                         .contentType(MediaType.APPLICATION_JSON).content(correction))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.currentData.merchant").value("수정된 상점"))
+                .andExpect(jsonPath("$.currentData.shopName").value("수정된 상점"))
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
         JsonNode corrected = objectMapper.readTree(correctedJson);
 
@@ -169,13 +169,47 @@ class ReceiptApiIntegrationTest {
     }
 
     @Test
+    void supportsShopNameCorrectionAndClearing() throws Exception {
+        JsonNode accepted = upload("receipt.png", png(800, 1200), null, 202);
+        long receiptId = accepted.path("receiptId").asLong();
+        process(receiptId);
+        JsonNode receipt = getReceipt(receiptId);
+
+        String correction = """
+                {"version":%d,"shopName":"수정된 상점"}
+                """.formatted(receipt.path("version").asLong());
+        String response = mockMvc.perform(patch("/api/receipts/{id}/fields", receiptId)
+                        .cookie(sessionCookie).with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON).content(correction))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.currentData.shopName").value("수정된 상점"))
+                .andExpect(jsonPath("$.originalData.shopName").value("테스트상점"))
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+        JsonNode corrected = objectMapper.readTree(response);
+
+        String clear = """
+                {"version":%d,"clearFields":["shopName"]}
+                """.formatted(corrected.path("version").asLong());
+        response = mockMvc.perform(patch("/api/receipts/{id}/fields", receiptId)
+                        .cookie(sessionCookie).with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON).content(clear))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.originalData.shopName").value("테스트상점"))
+                .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+        JsonNode cleared = objectMapper.readTree(response);
+        assertThat(cleared.path("currentData").path("shopName").isNull()).isTrue();
+        assertThat(cleared.path("currentData").path("totalAmount").decimalValue())
+                .isEqualByComparingTo("12000");
+    }
+
+    @Test
     void rejectsStaleReviewerVersion() throws Exception {
-        JsonNode accepted = upload("missing-merchant.png", png(800, 1200), null, 202);
+        JsonNode accepted = upload("missing-shop-name.png", png(800, 1200), null, 202);
         process(accepted.path("receiptId").asLong());
         JsonNode uploaded = getReceipt(accepted.path("receiptId").asLong());
         long version = uploaded.path("version").asLong();
         String body = """
-                {"version":%d,"reviewerId":"reviewer-1","merchant":"첫 수정"}
+                {"version":%d,"reviewerId":"reviewer-1","shopName":"첫 수정"}
                 """.formatted(version);
         mockMvc.perform(patch("/api/receipts/{id}/fields", uploaded.path("id").asText()).cookie(sessionCookie).with(csrf())
                         .contentType(MediaType.APPLICATION_JSON).content(body))

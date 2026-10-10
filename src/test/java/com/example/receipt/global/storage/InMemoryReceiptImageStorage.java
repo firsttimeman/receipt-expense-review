@@ -7,6 +7,7 @@ import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+/** 테스트에서만 사용하는 이미지 저장소이며 애플리케이션 배포 파일에는 포함되지 않습니다. */
 @Component
 @Profile("test")
 public class InMemoryReceiptImageStorage implements ReceiptImageStorage {

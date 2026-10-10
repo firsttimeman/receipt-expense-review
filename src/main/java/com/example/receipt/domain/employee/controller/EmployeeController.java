@@ -14,7 +14,7 @@ import org.springframework.web.bind.annotation.*;
 public class EmployeeController {
     private final EmployeeService service;
 
-    private final CurrentEmployee current;
+    private final CurrentEmployeeService currentEmployeeService;
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
@@ -27,6 +27,6 @@ public class EmployeeController {
 
     @PatchMapping("/{id}/active")
     public EmployeeResponse active(@PathVariable Long id, @Valid @RequestBody ActiveRequest request) {
-        return service.active(id, request.active(), current.require().id());
+        return service.active(id, request.active(), currentEmployeeService.getCurrentEmployee().id());
     }
 }

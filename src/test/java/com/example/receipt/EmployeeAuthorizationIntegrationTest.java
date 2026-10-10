@@ -40,6 +40,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 
 @SpringBootTest
+@ActiveProfiles("test")
 @AutoConfigureMockMvc
 @Testcontainers
 class EmployeeAuthorizationIntegrationTest {
@@ -49,6 +50,9 @@ class EmployeeAuthorizationIntegrationTest {
         r.add("spring.datasource.url", MYSQL::getJdbcUrl);
         r.add("spring.datasource.username", MYSQL::getUsername);
         r.add("spring.datasource.password", MYSQL::getPassword);
+        r.add("spring.datasource.driver-class-name", () -> "com.mysql.cj.jdbc.Driver");
+        r.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
+        r.add("spring.flyway.enabled", () -> "true");
         r.add("spring.data.redis.host", REDIS::getHost);
         r.add("spring.data.redis.port", () -> REDIS.getMappedPort(6379));
         r.add("receipt.worker.enabled", () -> "false");
@@ -99,7 +103,7 @@ class EmployeeAuthorizationIntegrationTest {
         var out = new ByteArrayOutputStream(); ImageIO.write(image, "png", out); return out.toByteArray();
     }
     private JsonNode upload(Cookie session, byte[] bytes, String key, int status) throws Exception {
-        return upload(session, bytes, key, "missing-merchant.png", status);
+        return upload(session, bytes, key, "missing-shop-name.png", status);
     }
     private JsonNode upload(Cookie session, byte[] bytes, String key, String fileName, int status) throws Exception {
         var request = multipart("/api/receipts").file(new MockMultipartFile("file", fileName, "image/png", bytes))
@@ -116,7 +120,7 @@ class EmployeeAuthorizationIntegrationTest {
     }
     private ResultActions correction(Cookie session, long id, long version) throws Exception {
         return mvc.perform(patch("/api/receipts/{id}/fields", id).cookie(session).with(csrf())
-                .contentType(MediaType.APPLICATION_JSON).content("{\"version\":"+version+",\"merchant\":\"corrected\",\"reviewerId\":\"forged-user\"}"));
+                .contentType(MediaType.APPLICATION_JSON).content("{\"version\":"+version+",\"shopName\":\"corrected\",\"reviewerId\":\"forged-user\"}"));
     }
     private ResultActions decision(Cookie session, long id, long version, String decision) throws Exception {
         return mvc.perform(post("/api/receipts/{id}/decision", id).cookie(session).with(csrf())
@@ -261,21 +265,23 @@ class EmployeeAuthorizationIntegrationTest {
             case ADMIN -> admin;
         };
         var session = login(owner);
-        long id = upload(session, png(60), "owner-correction", "over-limit.png", 202)
+        long id = upload(session, png(60), "owner-correction", "missing-shop-name.png", 202)
                 .path("receiptId").asLong();
         process(id);
         JsonNode before = detail(session, id, 200);
         assertThat(before.path("status").asText()).isEqualTo("NEEDS_REVIEW");
-        assertThat(before.path("currentData").path("totalAmount").decimalValue()).isEqualByComparingTo("500000");
+        assertThat(before.path("currentData").path("shopName").isNull()).isTrue();
 
         JsonNode corrected = body(mvc.perform(patch("/api/receipts/{id}/fields", id).cookie(session).with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(Map.of("version", before.path("version").asLong(),
-                                "totalAmount", 12000))))
+                                "shopName", "수정된 상점"))))
                 .andExpect(status().isOk()).andReturn());
         assertThat(corrected.path("status").asText()).isEqualTo("NEEDS_REVIEW");
+        assertThat(corrected.path("currentData").path("shopName").asText()).isEqualTo("수정된 상점");
         assertThat(corrected.path("currentData").path("totalAmount").decimalValue()).isEqualByComparingTo("12000");
-        assertThat(corrected.path("originalData").path("totalAmount").decimalValue()).isEqualByComparingTo("500000");
+        assertThat(corrected.path("originalData").path("shopName").isNull()).isTrue();
+        assertThat(corrected.path("originalData").path("totalAmount").decimalValue()).isEqualByComparingTo("12000");
         assertThat(corrected.path("ruleResults")).allSatisfy(rule ->
                 assertThat(rule.path("outcome").asText()).isNotEqualTo("FAIL"));
         assertThat(audits.findByReceiptIdOrderByOccurredAtAsc(id))
@@ -295,7 +301,7 @@ class EmployeeAuthorizationIntegrationTest {
     void reviewerAndAdminCannotApproveOrRejectTheirOwnReceipt(EmployeeRole role) throws Exception {
         Employee owner = role == EmployeeRole.ADMIN ? admin : reviewer;
         var session = login(owner);
-        long id = upload(session, png(61), "self-review", "over-limit.png", 202)
+        long id = upload(session, png(61), "self-review", "missing-shop-name.png", 202)
                 .path("receiptId").asLong();
         process(id);
         long version = receipts.findById(id).orElseThrow().version();

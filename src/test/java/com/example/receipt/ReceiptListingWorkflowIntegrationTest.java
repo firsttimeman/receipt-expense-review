@@ -20,7 +20,6 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.boot.builder.SpringApplicationBuilder;
@@ -28,8 +27,14 @@ import org.springframework.boot.web.servlet.context.ServletWebServerApplicationC
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.MySQLContainer;
+import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.S3Client;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
@@ -41,7 +46,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -52,7 +56,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
-/** 실제 DB·Redis와 HTTP로 목록 조회 권한 및 계정 발급부터 검수까지의 흐름을 검증합니다. */
+/** 실제 DB·Redis·S3 호환 서버와 HTTP로 계정 발급부터 검수까지의 흐름을 검증합니다. */
 @Testcontainers
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ReceiptListingWorkflowIntegrationTest {
@@ -62,8 +66,16 @@ class ReceiptListingWorkflowIntegrationTest {
     @Container
     static final GenericContainer<?> REDIS = new GenericContainer<>("redis:7.2-alpine").withExposedPorts(6379);
 
-    @TempDir
-    static Path images;
+    @Container
+    static final GenericContainer<?> S3_SERVER = new GenericContainer<>("adobe/s3mock:5.2.3")
+            .withExposedPorts(9090)
+            .waitingFor(Wait.forListeningPort());
+
+    private static final String BUCKET = "receipt-listing-test";
+
+    private static final String ACCESS_KEY = "receipt-listing-test";
+
+    private static final String SECRET_KEY = "receipt-listing-test-secret";
 
     private static final String PASSWORD = "listing-workflow-password";
 
@@ -77,6 +89,12 @@ class ReceiptListingWorkflowIntegrationTest {
 
     private ServletWebServerApplicationContext server;
 
+    private String previousAccessKey;
+
+    private String previousSecretKey;
+
+    private String previousSessionToken;
+
     private Employee admin;
 
     private Employee employee;
@@ -89,12 +107,34 @@ class ReceiptListingWorkflowIntegrationTest {
 
     @BeforeAll
     void startApplication() {
+        previousAccessKey = System.getProperty("aws.accessKeyId");
+        previousSecretKey = System.getProperty("aws.secretAccessKey");
+        previousSessionToken = System.getProperty("aws.sessionToken");
+        System.setProperty("aws.accessKeyId", ACCESS_KEY);
+        System.setProperty("aws.secretAccessKey", SECRET_KEY);
+        System.clearProperty("aws.sessionToken");
+
+        try (S3Client client = S3Client.builder()
+                .endpointOverride(s3Endpoint())
+                .region(Region.US_EAST_1)
+                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(ACCESS_KEY, SECRET_KEY)))
+                .forcePathStyle(true)
+                .httpClientBuilder(UrlConnectionHttpClient.builder())
+                .build()) {
+            client.createBucket(request -> request.bucket(BUCKET));
+        }
         server = startServer(false);
     }
 
     @AfterAll
     void stopApplication() {
-        if (server != null) server.close();
+        try {
+            if (server != null) server.close();
+        } finally {
+            restoreProperty("aws.accessKeyId", previousAccessKey);
+            restoreProperty("aws.secretAccessKey", previousSecretKey);
+            restoreProperty("aws.sessionToken", previousSessionToken);
+        }
     }
 
     @BeforeEach
@@ -143,7 +183,7 @@ class ReceiptListingWorkflowIntegrationTest {
         }
         assertThat(page.path("content").get(0).path("status").isNull()).isTrue();
         assertThat(page.path("content").get(0).path("jobStatus").asText()).isEqualTo("QUEUED");
-        assertThat(page.path("content").get(1).path("merchant").asText()).isEqualTo("목록 테스트 상점");
+        assertThat(page.path("content").get(1).path("shopName").asText()).isEqualTo("목록 테스트 상점");
     }
 
     @Test
@@ -175,6 +215,11 @@ class ReceiptListingWorkflowIntegrationTest {
         assertThat(ids(page)).containsExactlyElementsOf(pending.stream().sorted(java.util.Comparator.reverseOrder()).toList());
         assertThat(page.path("totalElements").asLong()).isEqualTo(4);
         assertThat(page.toString()).contains("FAILED"); // 추출 실패 후 수기 입력이 필요한 건도 보여야 합니다.
+        JsonNode firstPage = browser.page(server, "/api/receipts/review-queue?size=2");
+        assertThat(ids(firstPage)).containsExactlyElementsOf(ids(page).subList(0, 2));
+        assertThat(firstPage.path("totalElements").asLong()).isEqualTo(4);
+        assertThat(firstPage.path("totalPages").asInt()).isEqualTo(2);
+        assertThat(firstPage.path("hasNext").asBoolean()).isTrue();
         JsonNode filtered = browser.page(server, "/api/receipts/review-queue?status=NEEDS_REVIEW");
         assertThat(filtered.path("totalElements").asLong()).isOne();
         assertThat(filtered.path("content").get(0).path("status").asText()).isEqualTo("NEEDS_REVIEW");
@@ -225,11 +270,21 @@ class ReceiptListingWorkflowIntegrationTest {
         assertThat(ids(browser.page(server, "/api/receipts?" + range))).containsExactly(atLast, approved, atStart);
         assertThat(ids(browser.page(server, "/api/receipts?" + range + "&status=NEEDS_REVIEW")))
                 .containsExactly(atLast, atStart);
+        JsonNode filteredPage = browser.page(server, "/api/receipts?" + range + "&status=NEEDS_REVIEW&size=1");
+        assertThat(ids(filteredPage)).containsExactly(atLast);
+        assertThat(filteredPage.path("totalElements").asLong()).isEqualTo(2);
+        assertThat(filteredPage.path("totalPages").asInt()).isEqualTo(2);
         assertThat(ids(browser.page(server, "/api/receipts?to=2026-10-01"))).containsExactly(atLast, approved, atStart, before);
         assertThat(ids(browser.page(server, "/api/receipts?from=2026-10-01"))).containsExactly(after, atLast, approved, atStart);
-        JsonNode queue = login(reviewer).page(server, "/api/receipts/review-queue?" + range);
+        Browser inspector = login(reviewer);
+        JsonNode queue = inspector.page(server, "/api/receipts/review-queue?" + range);
         assertThat(queue.path("totalElements").asLong()).isEqualTo(3);
         assertThat(ids(queue)).contains(atLast, atStart).doesNotContain(before, after, approved);
+        JsonNode queuePage = inspector.page(server,
+                "/api/receipts/review-queue?" + range + "&status=NEEDS_REVIEW&size=1");
+        assertThat(ids(queuePage)).containsExactly(atLast);
+        assertThat(queuePage.path("totalElements").asLong()).isEqualTo(3);
+        assertThat(queuePage.path("totalPages").asInt()).isEqualTo(3);
     }
 
     @Test
@@ -264,7 +319,7 @@ class ReceiptListingWorkflowIntegrationTest {
         assertThat(ids(login(other).page(server, "/api/receipts"))).isEmpty();
         assertThat(login(other).get(server, "/api/receipts/" + id).statusCode()).isEqualTo(404);
 
-        // 실제 Worker를 별도 서버에서 시작하고 같은 Redis 세션과 이미지 경로로 처리를 이어갑니다.
+        // 별도 서버의 Worker가 같은 Redis 세션과 S3 버킷으로 처리를 이어갑니다.
         try (var worker = startServer(true)) {
             await().atMost(Duration.ofSeconds(20)).pollInterval(Duration.ofMillis(100)).untilAsserted(() -> {
                 assertThat(ids(submitter.page(worker, "/api/receipts?status=NEEDS_REVIEW"))).containsExactly(id);
@@ -272,10 +327,13 @@ class ReceiptListingWorkflowIntegrationTest {
             JsonNode detail = submitter.page(worker, "/api/receipts/" + id);
             assertThat(detail.path("jobStatus").asText()).isEqualTo("COMPLETED");
             HttpResponse<String> correction = submitter.change(worker, "PATCH", "/api/receipts/" + id + "/fields",
-                    Map.of("version", detail.path("version").asLong(), "totalAmount", 12000));
+                    Map.of("version", detail.path("version").asLong(), "shopName", "수정된 상점"));
             assertThat(correction.statusCode()).as(correction.body()).isEqualTo(200);
             JsonNode corrected = json.readTree(correction.body());
             assertThat(corrected.path("status").asText()).isEqualTo("NEEDS_REVIEW");
+            assertThat(corrected.path("currentData").path("shopName").asText()).isEqualTo("수정된 상점");
+            assertThat(corrected.path("ruleResults")).allSatisfy(rule ->
+                    assertThat(rule.path("outcome").asText()).isNotEqualTo("FAIL"));
             assertThat(submitter.get(worker, "/api/receipts/review-queue").statusCode()).isEqualTo(403);
 
             JsonNode queue = inspector.page(server, "/api/receipts/review-queue?status=NEEDS_REVIEW");
@@ -369,10 +427,21 @@ class ReceiptListingWorkflowIntegrationTest {
                 "--spring.datasource.hikari.maximum-pool-size=3", "--spring.data.redis.host=" + REDIS.getHost(),
                 "--spring.data.redis.port=" + REDIS.getMappedPort(6379),
                 "--spring.session.redis.namespace=receipt:listing-workflow:session", "--server.servlet.session.cookie.secure=false",
-                "--receipt.storage.provider=local", "--receipt.storage.local-directory=" + images,
+                "--receipt.storage.s3.bucket=" + BUCKET, "--receipt.storage.s3.region=us-east-1",
+                "--receipt.storage.s3.endpoint=" + s3Endpoint(), "--receipt.storage.s3.path-style-access=true",
+                "--receipt.storage.s3.prefix=listing-workflow",
                 "--receipt.extractor.provider=fake", "--receipt.worker.enabled=" + worker,
                 "--receipt.worker.poll-delay-millis=100", "--receipt.worker.concurrency=1", "--receipt.worker.batch-size=1",
                 "--spring.main.banner-mode=off", "--logging.level.root=WARN");
+    }
+
+    private URI s3Endpoint() {
+        return URI.create("http://" + S3_SERVER.getHost() + ":" + S3_SERVER.getMappedPort(9090));
+    }
+
+    private void restoreProperty(String name, String value) {
+        if (value == null) System.clearProperty(name);
+        else System.setProperty(name, value);
     }
 
     private class Browser {
@@ -398,7 +467,7 @@ class ReceiptListingWorkflowIntegrationTest {
             ImageIO.write(image, "png", png);
             String boundary = "receiptWorkflowBoundary";
             var body = new ByteArrayOutputStream();
-            body.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"over-limit.png\"\r\nContent-Type: image/png\r\n\r\n")
+            body.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"missing-shop-name.png\"\r\nContent-Type: image/png\r\n\r\n")
                     .getBytes(StandardCharsets.UTF_8));
             body.write(png.toByteArray());
             body.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));

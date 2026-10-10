@@ -8,7 +8,6 @@ import com.example.receipt.domain.receipt.exception.ReceiptConflictException;
 import com.example.receipt.domain.receipt.repository.IdempotencyRecordRepository;
 import com.example.receipt.domain.receipt.repository.ReceiptRepository;
 import com.example.receipt.global.lock.DuplicateReceiptLock;
-import com.example.receipt.global.observability.ReceiptMetrics;
 import com.example.receipt.global.storage.ReceiptImageStorage;
 import org.junit.jupiter.api.Test;
 
@@ -17,10 +16,8 @@ import java.util.Optional;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @SuppressWarnings("unchecked")
@@ -34,7 +31,6 @@ class ReceiptUploadServiceTest {
         IdempotencyRecordRepository idempotencyRepository = mock(IdempotencyRecordRepository.class);
         DuplicateReceiptLock duplicateReceiptLock = mock(DuplicateReceiptLock.class);
         ReceiptImageStorage imageStorage = mock(ReceiptImageStorage.class);
-        ReceiptMetrics metrics = mock(ReceiptMetrics.class);
         Receipt receipt = mock(Receipt.class);
         ReceiptExtractionJob job = mock(ReceiptExtractionJob.class);
 
@@ -50,7 +46,7 @@ class ReceiptUploadServiceTest {
 
         ReceiptUploadService service = new ReceiptUploadService(
                 persistenceService, receiptRepository, jobRepository, idempotencyRepository,
-                duplicateReceiptLock, imageStorage, Clock.systemUTC(), metrics);
+                duplicateReceiptLock, imageStorage, Clock.systemUTC());
 
         UploadResult result = service.upload(
                 "company", null, "receipt.png", "image/png", new byte[]{1}, 1L);
@@ -58,6 +54,5 @@ class ReceiptUploadServiceTest {
         assertThat(result.receipt()).isSameAs(receipt);
         assertThat(result.job()).isSameAs(job);
         assertThat(result.created()).isFalse();
-        verify(metrics).recordUpload("duplicate");
     }
 }

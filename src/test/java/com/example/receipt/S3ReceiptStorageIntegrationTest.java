@@ -3,7 +3,6 @@ package com.example.receipt;
 import com.example.receipt.domain.employee.entity.Employee;
 import com.example.receipt.domain.employee.model.EmployeeRole;
 import com.example.receipt.domain.employee.repository.EmployeeRepository;
-import com.example.receipt.global.storage.LocalReceiptImageStorage;
 import com.example.receipt.global.storage.ReceiptImageStorage;
 import com.example.receipt.global.storage.ReceiptImageStorageException;
 import com.example.receipt.global.storage.S3ReceiptImageStorage;
@@ -13,7 +12,6 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.web.servlet.context.ServletWebServerApplicationContext;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -24,7 +22,6 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
-import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
@@ -39,8 +36,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.HexFormat;
@@ -72,9 +67,6 @@ class S3ReceiptStorageIntegrationTest {
     static final GenericContainer<?> S3_SERVER = new GenericContainer<>("adobe/s3mock:5.2.3")
             .withExposedPorts(9090)
             .waitingFor(Wait.forListeningPort());
-
-    @TempDir
-    static Path files;
 
     private final ObjectMapper json = new ObjectMapper();
 
@@ -120,11 +112,7 @@ class S3ReceiptStorageIntegrationTest {
         byte[] png = png();
         Browser browser = new Browser();
         long receiptId;
-        Path uploaderDirectory = files.resolve("uploader-disk");
-        Path workerDirectory = files.resolve("worker-disk");
-        Path thirdDirectory = files.resolve("third-disk");
-
-        try (var uploader = startServer(false, uploaderDirectory)) {
+        try (var uploader = startServer(false)) {
             assertThat(uploader.getBean(ReceiptImageStorage.class)).isInstanceOf(S3ReceiptImageStorage.class);
             Employee employee = new Employee("s3-employee", "공유 저장소 테스트", EmployeeRole.EMPLOYEE);
             employee.setPassword(new BCryptPasswordEncoder(12).encode(PASSWORD));
@@ -136,12 +124,11 @@ class S3ReceiptStorageIntegrationTest {
             JsonNode accepted = json.readTree(upload.body());
             receiptId = accepted.path("receiptId").asLong();
             assertThat(accepted.path("jobStatus").asText()).isEqualTo("QUEUED");
-            assertThat(Files.exists(uploaderDirectory)).isFalse();
         }
 
-        // 업로드를 처리한 서버와 로컬 디스크 없이도 DB의 키로 공통 저장소를 읽습니다.
-        try (var worker = startServer(true, workerDirectory);
-             var third = startServer(false, thirdDirectory)) {
+        // 업로드를 처리한 서버가 종료되어도 다른 서버가 DB의 키로 S3 이미지를 읽습니다.
+        try (var worker = startServer(true);
+             var third = startServer(false)) {
             assertThat(browser.get(worker, "/api/auth/me").statusCode()).isEqualTo(200);
             assertThat(browser.get(third, "/api/auth/me").statusCode()).isEqualTo(200);
             await().atMost(Duration.ofSeconds(20)).pollInterval(Duration.ofMillis(100)).untilAsserted(() -> {
@@ -154,8 +141,6 @@ class S3ReceiptStorageIntegrationTest {
             });
             JsonNode events = json.readTree(browser.get(worker, "/api/receipts/" + receiptId + "/audit-events").body());
             assertThat(events.toString()).contains("EXTRACTION_COMPLETED").doesNotContain("EXTRACTION_FAILED");
-            assertThat(Files.exists(workerDirectory)).isFalse();
-            assertThat(Files.exists(thirdDirectory)).isFalse();
             var objects = client.listObjectsV2(request -> request.bucket(BUCKET).prefix("integration/")).contents();
             assertThat(objects).hasSize(1);
             assertThat(client.getObjectAsBytes(request -> request.bucket(BUCKET).key(objects.get(0).key())).asByteArray())
@@ -164,19 +149,17 @@ class S3ReceiptStorageIntegrationTest {
     }
 
     @Test
-    void retainsLocalKeysForMigrationAndRepeatedWritesHaveOneObject() throws Exception {
-        byte[] bytes = "storage-migration-fixture".getBytes(StandardCharsets.UTF_8);
+    void repeatedWritesReuseTheSameS3ObjectAndPrefixesAreOptional() throws Exception {
+        byte[] bytes = "storage-repeat-fixture".getBytes(StandardCharsets.UTF_8);
         String sha = sha256(bytes);
-        var local = new LocalReceiptImageStorage(files.resolve("migration-source").toString());
-        String localKey = local.store("internal", sha, bytes);
-        var storage = new S3ReceiptImageStorage(client, BUCKET, "/migration/");
+        var storage = new S3ReceiptImageStorage(client, BUCKET, "/repeated/");
+        String storageKey = storage.store("internal", sha, bytes);
 
-        // 전환 전에 기존 파일을 같은 상대 경로로 복사하면 DB 키를 수정할 필요가 없습니다.
-        client.putObject(request -> request.bucket(BUCKET).key("migration/" + localKey), RequestBody.fromBytes(local.load(localKey)));
-        assertThat(storage.load(localKey)).isEqualTo(bytes);
-        assertThat(storage.store("internal", sha, bytes)).isEqualTo(localKey);
-        assertThat(storage.store("internal", sha, bytes)).isEqualTo(localKey);
-        assertThat(client.listObjectsV2(request -> request.bucket(BUCKET).prefix("migration/")).contents()).hasSize(1);
+        assertThat(storage.load(storageKey)).isEqualTo(bytes);
+        assertThat(storage.store("internal", sha, bytes)).isEqualTo(storageKey);
+        assertThat(client.listObjectsV2(request -> request.bucket(BUCKET).prefix("repeated/")).contents()).hasSize(1);
+        assertThat(client.getObjectAsBytes(request -> request.bucket(BUCKET).key("repeated/" + storageKey)).asByteArray())
+                .isEqualTo(bytes);
 
         var noPrefix = new S3ReceiptImageStorage(client, BUCKET, "");
         String key = noPrefix.store("no-prefix", sha, bytes);
@@ -198,14 +181,13 @@ class S3ReceiptStorageIntegrationTest {
                 .hasMessage("공유 저장소에 영수증 이미지를 저장하지 못했습니다.");
     }
 
-    private ServletWebServerApplicationContext startServer(boolean worker, Path directory) {
+    private ServletWebServerApplicationContext startServer(boolean worker) {
         return (ServletWebServerApplicationContext) new SpringApplicationBuilder(ReceiptApplication.class).run(
                 "--server.port=0", "--spring.datasource.url=" + MYSQL.getJdbcUrl(),
                 "--spring.datasource.username=" + MYSQL.getUsername(), "--spring.datasource.password=" + MYSQL.getPassword(),
                 "--spring.datasource.hikari.maximum-pool-size=3", "--spring.data.redis.host=" + REDIS.getHost(),
                 "--spring.data.redis.port=" + REDIS.getMappedPort(6379),
                 "--spring.session.redis.namespace=receipt:s3-integration:session", "--server.servlet.session.cookie.secure=false",
-                "--receipt.storage.provider=s3", "--receipt.storage.local-directory=" + directory,
                 "--receipt.storage.s3.bucket=" + BUCKET, "--receipt.storage.s3.region=us-east-1",
                 "--receipt.storage.s3.endpoint=" + endpoint(), "--receipt.storage.s3.path-style-access=true",
                 "--receipt.storage.s3.prefix=integration", "--receipt.extractor.provider=fake",

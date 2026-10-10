@@ -39,10 +39,9 @@ public class SecurityConfiguration {
                                 "/api/auth/csrf",
                                 "/api/auth/login",
                                 "/api/auth/password",
-                                "/actuator/health",
                                 "/error"
                         ).permitAll()
-                        .requestMatchers("/api/employees/**", "/actuator/**").hasRole("ADMIN")
+                        .requestMatchers("/api/employees/**").hasRole("ADMIN")
                         .anyRequest().authenticated())
                 .csrf(csrf -> csrf.csrfTokenRepository(csrfTokenRepository))
                 .securityContext(context -> context

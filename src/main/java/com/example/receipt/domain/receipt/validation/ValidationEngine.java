@@ -4,13 +4,11 @@ import com.example.receipt.domain.receipt.model.LineItem;
 import com.example.receipt.domain.receipt.model.ReceiptData;
 import com.example.receipt.domain.receipt.model.RuleOutcome;
 import com.example.receipt.domain.receipt.model.RuleResult;
-import com.example.receipt.global.config.ReceiptProperties;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.time.Clock;
-import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -18,7 +16,6 @@ import java.util.List;
 @Component
 @RequiredArgsConstructor
 public class ValidationEngine {
-    private final ReceiptProperties properties;
     private final BusinessRegistrationNumberValidator businessNumberValidator;
     private final Clock clock;
 
@@ -28,16 +25,13 @@ public class ValidationEngine {
             data = new ReceiptData(null, null, null, null, null, List.of());
         }
 
-        results.add(required("MERCHANT_REQUIRED", data.merchant(), "상호"));
+        results.add(required("SHOP_NAME_REQUIRED", data.shopName(), "상호"));
         results.add(required("DATE_REQUIRED", data.date(), "거래일"));
         results.add(required("TOTAL_AMOUNT_REQUIRED", data.totalAmount(), "총액"));
         results.add(dateRule(data.date()));
         results.add(amountRule(data.totalAmount()));
         results.add(itemTotalRule(data));
         results.add(businessNumberRule(data.businessRegistrationNumber()));
-        results.add(limitRule(data.totalAmount()));
-        results.add(weekendRule(data.date()));
-        results.add(prohibitedMerchantRule(data.merchant()));
         results.add(duplicate
                 ? fail("DUPLICATE_SUBMISSION", "동일한 이미지가 이미 제출되었습니다.")
                 : pass("DUPLICATE_SUBMISSION", "중복 제출이 아닙니다."));
@@ -88,35 +82,6 @@ public class ValidationEngine {
         return businessNumberValidator.isValid(number)
                 ? pass("BUSINESS_NUMBER_CHECKSUM", "사업자등록번호 체크섬이 유효합니다.")
                 : fail("BUSINESS_NUMBER_CHECKSUM", "사업자등록번호 형식 또는 체크섬이 유효하지 않습니다.");
-    }
-
-    private RuleResult limitRule(BigDecimal amount) {
-        if (amount == null) {
-            return notApplicable("POLICY_AMOUNT_LIMIT", "총액이 없어 한도를 검사하지 않았습니다.");
-        }
-        return amount.compareTo(properties.getPolicy().getMaxAmount()) > 0
-                ? fail("POLICY_AMOUNT_LIMIT", "회사 경비 한도를 초과했습니다.")
-                : pass("POLICY_AMOUNT_LIMIT", "회사 경비 한도 이내입니다.");
-    }
-
-    private RuleResult weekendRule(LocalDate date) {
-        if (!properties.getPolicy().isWeekendRequiresReview() || date == null) {
-            return notApplicable("POLICY_WEEKEND", "주말 검사를 적용하지 않았습니다.");
-        }
-        boolean weekend = date.getDayOfWeek() == DayOfWeek.SATURDAY || date.getDayOfWeek() == DayOfWeek.SUNDAY;
-        return weekend
-                ? fail("POLICY_WEEKEND", "주말 사용 건은 사람 검수가 필요합니다.")
-                : pass("POLICY_WEEKEND", "평일 사용 건입니다.");
-    }
-
-    private RuleResult prohibitedMerchantRule(String merchant) {
-        if (merchant == null) {
-            return notApplicable("POLICY_PROHIBITED_MERCHANT", "상호가 없어 금지 업종을 검사하지 않았습니다.");
-        }
-        boolean prohibited = properties.getPolicy().getProhibitedMerchantKeywords().stream().anyMatch(merchant::contains);
-        return prohibited
-                ? fail("POLICY_PROHIBITED_MERCHANT", "금지 업종 키워드가 포함되어 있습니다.")
-                : pass("POLICY_PROHIBITED_MERCHANT", "금지 업종 키워드가 없습니다.");
     }
 
     private RuleResult pass(String code, String message) {

@@ -31,8 +31,6 @@ spring:
 
 receipt:
   storage:
-    provider: ${RECEIPT_IMAGE_STORAGE_PROVIDER:local}
-    local-directory: ${RECEIPT_IMAGE_STORAGE_DIRECTORY:./runtime/receipt-images}
     s3:
       bucket: ${RECEIPT_S3_BUCKET:}
       region: ${RECEIPT_S3_REGION:ap-northeast-2}
@@ -54,13 +52,6 @@ receipt:
   quality:
     min-width: 600
     min-height: 600
-  policy:
-    max-amount: 300000
-    weekend-requires-review: true
-    prohibited-merchant-keywords:
-      - 유흥
-      - 카지노
-      - 성인
   openai:
     api-key: ${OPENAI_API_KEY:}
     model: ${OPENAI_MODEL:}
@@ -79,9 +70,3 @@ server:
         secure: ${SESSION_COOKIE_SECURE:false}
   error:
     include-message: always
-
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info,metrics,prometheus

@@ -12,7 +12,7 @@ import com.example.receipt.domain.receipt.repository.AuditEventRepository;
 import com.example.receipt.domain.receipt.repository.IdempotencyRecordRepository;
 import com.example.receipt.domain.receipt.repository.ReceiptRepository;
 import com.example.receipt.global.lock.CountingDuplicateReceiptLock;
-import com.example.receipt.global.lock.InMemoryDuplicateReceiptLock;
+import com.example.receipt.global.lock.RedisDuplicateReceiptLock;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -22,6 +22,11 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
 
 import javax.imageio.ImageIO;
 import java.awt.Color;
@@ -42,8 +47,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
 @ActiveProfiles("test")
+@Testcontainers
 @Import(ConcurrentExtractionCharacterizationTest.ExtractorTestConfiguration.class)
 class ConcurrentExtractionCharacterizationTest {
+    @Container
+    static final GenericContainer<?> REDIS = new GenericContainer<>("redis:7.2-alpine").withExposedPorts(6379);
+
+    @DynamicPropertySource
+    static void redisProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.data.redis.host", REDIS::getHost);
+        registry.add("spring.data.redis.port", () -> REDIS.getMappedPort(6379));
+    }
+
     private static final int CONCURRENT_REQUESTS = 100;
 
     @Autowired ReceiptUploadService uploadService;
@@ -120,7 +135,6 @@ class ConcurrentExtractionCharacterizationTest {
         byte[] image = png(800, 1200);
         ExecutorService executor = Executors.newFixedThreadPool(CONCURRENT_REQUESTS);
         CountDownLatch start = new CountDownLatch(1);
-        long startedAt = System.nanoTime();
 
         try {
             List<Future<UploadResult>> futures = java.util.stream.IntStream.range(0, CONCURRENT_REQUESTS)
@@ -142,17 +156,7 @@ class ConcurrentExtractionCharacterizationTest {
                 receiptIds.add(future.get(60, TimeUnit.SECONDS).receipt().id());
             }
 
-            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
             int extractionCalls = countingExtractor.invocationCount();
-
-            System.out.printf(
-                    "ASYNC_INTAKE requests=%d receipts=%d jobs=%d extractionCalls=%d elapsedMillis=%d%n",
-                    CONCURRENT_REQUESTS,
-                    receiptRepository.count(),
-                    jobRepository.count(),
-                    extractionCalls,
-                    elapsedMillis
-            );
 
             assertThat(receiptIds).hasSize(1);
             assertThat(receiptRepository.count()).isOne();
@@ -193,7 +197,7 @@ class ConcurrentExtractionCharacterizationTest {
 
         @Bean
         @Primary
-        CountingDuplicateReceiptLock countingDuplicateReceiptLock(InMemoryDuplicateReceiptLock delegate) {
+        CountingDuplicateReceiptLock countingDuplicateReceiptLock(RedisDuplicateReceiptLock delegate) {
             return new CountingDuplicateReceiptLock(delegate);
         }
     }

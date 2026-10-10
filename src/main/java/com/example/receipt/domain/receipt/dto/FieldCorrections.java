@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Set;
 
 public final class FieldCorrections {
-    private final String merchant;
+    private final String shopName;
     private final LocalDate date;
     private final BigDecimal totalAmount;
     private final String businessRegistrationNumber;
@@ -17,7 +17,7 @@ public final class FieldCorrections {
     private final Set<String> clearFields;
 
     public FieldCorrections(
-            String merchant,
+            String shopName,
             LocalDate date,
             BigDecimal totalAmount,
             String businessRegistrationNumber,
@@ -25,7 +25,7 @@ public final class FieldCorrections {
             List<LineItem> lineItems,
             Set<String> clearFields
     ) {
-        this.merchant = merchant;
+        this.shopName = shopName;
         this.date = date;
         this.totalAmount = totalAmount;
         this.businessRegistrationNumber = businessRegistrationNumber;
@@ -48,16 +48,16 @@ public final class FieldCorrections {
         }
 
         // 먼저 현재 값을 그대로 복사한다.
-        String updatedMerchant = base.merchant();
+        String updatedShopName = base.shopName();
         LocalDate updatedDate = base.date();
         BigDecimal updatedTotalAmount = base.totalAmount();
         String updatedBusinessNumber = base.businessRegistrationNumber();
         String updatedPaymentMethod = base.paymentMethod();
         List<LineItem> updatedLineItems = base.lineItems();
 
-        // 검수자가 새로운 값을 전달한 필드만 교체한다.
-        if (merchant != null) {
-            updatedMerchant = merchant;
+        // 새로운 값을 전달한 필드만 교체한다.
+        if (shopName != null) {
+            updatedShopName = shopName;
         }
         if (date != null) {
             updatedDate = date;
@@ -75,9 +75,9 @@ public final class FieldCorrections {
             updatedLineItems = lineItems;
         }
 
-        // clearFields에 포함된 필드는 검수자가 명시적으로 삭제한 것으로 처리한다.
-        if (clearFields.contains("merchant")) {
-            updatedMerchant = null;
+        // clearFields에 포함된 필드는 명시적으로 삭제한 것으로 처리한다.
+        if (clearFields.contains("shopName")) {
+            updatedShopName = null;
         }
         if (clearFields.contains("date")) {
             updatedDate = null;
@@ -96,7 +96,7 @@ public final class FieldCorrections {
         }
 
         return new ReceiptData(
-                updatedMerchant,
+                updatedShopName,
                 updatedDate,
                 updatedTotalAmount,
                 updatedBusinessNumber,

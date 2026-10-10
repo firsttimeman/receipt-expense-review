@@ -20,10 +20,10 @@ public class FakeReceiptExtractor implements ReceiptExtractor {
                     "fake", "deterministic-v1");
         }
 
-        String merchant = fileName.contains("missing-merchant") ? null : "테스트상점";
-        LocalDate date = fileName.contains("weekend") ? LocalDate.of(2026, 1, 17) : LocalDate.of(2026, 1, 15);
-        BigDecimal amount = fileName.contains("over-limit") ? new BigDecimal("500000") : new BigDecimal("12000");
-        ReceiptData data = new ReceiptData(merchant, date, amount, null, "신용카드", List.of());
+        String shopName = fileName.contains("missing-shop-name") ? null : "테스트상점";
+        LocalDate date = LocalDate.of(2026, 1, 15);
+        BigDecimal amount = new BigDecimal("12000");
+        ReceiptData data = new ReceiptData(shopName, date, amount, null, "신용카드", List.of());
         return new ExtractionResult(data, "fake", "deterministic-v1");
     }
 }

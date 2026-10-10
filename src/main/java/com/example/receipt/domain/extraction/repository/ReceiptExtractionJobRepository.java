@@ -37,13 +37,4 @@ public interface ReceiptExtractionJobRepository extends JpaRepository<ReceiptExt
             """, nativeQuery = true)
     List<ReceiptExtractionJob> lockExpiredJobs(@Param("now") Instant now,
                                                 @Param("batchSize") int batchSize);
-
-    @Query("""
-            SELECT COUNT(j)
-            FROM ReceiptExtractionJob j
-            WHERE j.status IN (com.example.receipt.domain.extraction.model.ExtractionJobStatus.QUEUED,
-                               com.example.receipt.domain.extraction.model.ExtractionJobStatus.PROCESSING,
-                               com.example.receipt.domain.extraction.model.ExtractionJobStatus.RETRY_WAIT)
-            """)
-    long countUnfinishedJobs();
 }

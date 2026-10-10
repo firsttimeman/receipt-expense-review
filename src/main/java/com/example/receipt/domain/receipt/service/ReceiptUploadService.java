@@ -12,7 +12,6 @@ import com.example.receipt.domain.receipt.model.AuditAction;
 import com.example.receipt.domain.receipt.repository.IdempotencyRecordRepository;
 import com.example.receipt.domain.receipt.repository.ReceiptRepository;
 import com.example.receipt.global.lock.DuplicateReceiptLock;
-import com.example.receipt.global.observability.ReceiptMetrics;
 import com.example.receipt.global.storage.ReceiptImageStorage;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -26,6 +25,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 @Service
@@ -39,22 +39,9 @@ public class ReceiptUploadService {
     private final DuplicateReceiptLock duplicateReceiptLock;
     private final ReceiptImageStorage imageStorage;
     private final Clock clock;
-    private final ReceiptMetrics metrics;
 
     public UploadResult upload(String companyId, String idempotencyKey, String fileName,
                                String contentType, byte[] bytes, Long ownerId) {
-        try {
-            UploadResult result = doUpload(companyId, idempotencyKey, fileName, contentType, bytes, ownerId);
-            metrics.recordUpload(uploadOutcome(result));
-            return result;
-        } catch (RuntimeException exception) {
-            metrics.recordUpload("error");
-            throw exception;
-        }
-    }
-
-    private UploadResult doUpload(String companyId, String idempotencyKey, String fileName,
-                                  String contentType, byte[] bytes, Long ownerId) {
         if (bytes == null || bytes.length == 0) {
             throw new IllegalArgumentException("업로드 파일은 비어 있을 수 없습니다.");
         }
@@ -65,7 +52,6 @@ public class ReceiptUploadService {
         String imageSha256 = sha256(bytes);
         Optional<UploadResult> processedDuplicate = findProcessedDuplicate(companyId, imageSha256, ownerId);
         if (processedDuplicate.isPresent()) {
-            metrics.recordDuplicateFastPath();
             return processedDuplicate.get();
         }
 
@@ -81,13 +67,9 @@ public class ReceiptUploadService {
     }
 
     private void ensureOwner(Receipt receipt, Long ownerId) {
-        if (!java.util.Objects.equals(receipt.ownerEmployeeId(), ownerId))
+        if (!Objects.equals(receipt.ownerEmployeeId(), ownerId)) {
             throw new ReceiptConflictException("이미 사용 중인 이미지 또는 요청 키입니다.");
-    }
-
-    private String uploadOutcome(UploadResult result) {
-        if (result.created()) return "created";
-        return result.idempotentReplay() ? "idempotent_replay" : "duplicate";
+        }
     }
 
     private UploadResult acceptWhileLocked(String companyId, String idempotencyKey, String fileName,

@@ -5,7 +5,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 
-/** 저장소를 전환해도 DB에 저장한 이미지 키는 동일하게 유지합니다. */
+/** 회사 식별자와 이미지 해시로 S3에 저장할 객체의 키를 만듭니다. */
 final class ReceiptImageKey {
     private ReceiptImageKey() {
     }

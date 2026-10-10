@@ -121,14 +121,14 @@ public class OpenAiReceiptExtractor implements ReceiptExtractor {
                         "type", "object",
                         "additionalProperties", false,
                         "properties", Map.of(
-                                "merchant", nullableString,
+                                "shopName", nullableString,
                                 "date", nullableString,
                                 "totalAmount", nullableNumber,
                                 "businessRegistrationNumber", nullableString,
                                 "paymentMethod", nullableString,
                                 "lineItems", Map.of("type", "array", "items", lineItem)
                         ),
-                        "required", List.of("merchant", "date", "totalAmount",
+                        "required", List.of("shopName", "date", "totalAmount",
                                 "businessRegistrationNumber", "paymentMethod", "lineItems")
                 )
         );

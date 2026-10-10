@@ -17,7 +17,6 @@ import com.example.receipt.domain.receipt.repository.AuditEventRepository;
 import com.example.receipt.domain.receipt.repository.ReceiptRepository;
 import com.example.receipt.domain.receipt.validation.ReceiptStatusRouter;
 import com.example.receipt.domain.receipt.validation.ValidationEngine;
-import com.example.receipt.global.observability.ReceiptMetrics;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -38,7 +37,6 @@ public class ReceiptExtractionLifecycleService {
     private final ValidationEngine validationEngine;
     private final ReceiptStatusRouter statusRouter;
     private final Clock clock;
-    private final ReceiptMetrics metrics;
 
     @Transactional
     public Receipt completeQualityRejection(ClaimedReceiptJob claimedJob, ImageQualityResult quality) {
@@ -65,7 +63,6 @@ public class ReceiptExtractionLifecycleService {
         Instant completedAt = Instant.now(clock);
         receipt.completeExtraction(extraction.data(), rules, next, completedAt);
         job.complete(claimedJob.workerId(), claimedJob.claimToken(), completedAt);
-        metrics.recordExtractionSuccess();
         auditRepository.save(new AuditEvent(receipt.id(), extractedAt, "system",
                 AuditAction.EXTRACTION_COMPLETED, null, null, extractionDetails(extraction)));
         auditRepository.save(new AuditEvent(receipt.id(), completedAt, "system",
@@ -82,7 +79,6 @@ public class ReceiptExtractionLifecycleService {
         Instant nextRetryAt = requestedRetryAt.isAfter(now) ? requestedRetryAt : now.plusMillis(1);
         job.scheduleRetry(claimedJob.workerId(), claimedJob.claimToken(), nextRetryAt,
                 exception.getClass().getSimpleName(), exception.getMessage(), now);
-        metrics.recordExtractionRetry();
 
         auditRepository.save(new AuditEvent(receipt.id(), now, "system",
                 AuditAction.EXTRACTION_RETRY_SCHEDULED, null, null,
@@ -92,10 +88,8 @@ public class ReceiptExtractionLifecycleService {
 
     @Transactional
     public Receipt failExtraction(ClaimedReceiptJob claimedJob, ExtractionException exception) {
-        Receipt receipt = failExtraction(claimedJob,
+        return failExtraction(claimedJob,
                 exception.getClass().getSimpleName(), exception.getMessage());
-        metrics.recordExtractionFailure();
-        return receipt;
     }
 
     @Transactional

@@ -3,7 +3,7 @@ package com.example.receipt.domain.employee.controller;
 import com.example.receipt.domain.employee.dto.EmployeeResponse;
 import com.example.receipt.domain.employee.dto.LoginRequest;
 import com.example.receipt.domain.employee.dto.SetPasswordRequest;
-import com.example.receipt.domain.employee.service.CurrentEmployee;
+import com.example.receipt.domain.employee.service.CurrentEmployeeService;
 import com.example.receipt.domain.employee.service.EmployeeService;
 import com.example.receipt.domain.employee.service.LoginService;
 import jakarta.servlet.http.HttpServletRequest;
@@ -25,7 +25,7 @@ import java.util.Map;
 public class AuthController {
     private final EmployeeService service;
 
-    private final CurrentEmployee current;
+    private final CurrentEmployeeService currentEmployeeService;
 
     private final LoginService loginService;
 
@@ -49,6 +49,6 @@ public class AuthController {
 
     @GetMapping("/me")
     public EmployeeResponse me() {
-        return EmployeeResponse.from(current.require());
+        return EmployeeResponse.from(currentEmployeeService.getCurrentEmployee());
     }
 }

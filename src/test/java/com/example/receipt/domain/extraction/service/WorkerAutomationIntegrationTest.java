@@ -23,6 +23,11 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
 
 import javax.imageio.ImageIO;
 import java.awt.Color;
@@ -44,8 +49,18 @@ import static org.assertj.core.api.Assertions.assertThat;
         "receipt.worker.worker-id=automation-test-worker"
 })
 @ActiveProfiles("test")
+@Testcontainers
 @Import(WorkerAutomationIntegrationTest.ExtractorTestConfiguration.class)
 class WorkerAutomationIntegrationTest {
+    @Container
+    static final GenericContainer<?> REDIS = new GenericContainer<>("redis:7.2-alpine").withExposedPorts(6379);
+
+    @DynamicPropertySource
+    static void redisProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.data.redis.host", REDIS::getHost);
+        registry.add("spring.data.redis.port", () -> REDIS.getMappedPort(6379));
+    }
+
     @Autowired ReceiptUploadService uploadService;
     @Autowired ReceiptRepository receiptRepository;
     @Autowired ReceiptExtractionJobRepository jobRepository;

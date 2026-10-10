@@ -5,7 +5,6 @@ import com.example.receipt.domain.extraction.repository.ReceiptExtractionJobRepo
 import com.example.receipt.domain.receipt.entity.AuditEvent;
 import com.example.receipt.domain.receipt.model.AuditAction;
 import com.example.receipt.domain.receipt.repository.AuditEventRepository;
-import com.example.receipt.global.observability.ReceiptMetrics;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,10 +21,9 @@ public class ExpiredJobRecoveryService {
     private final ReceiptExtractionJobRepository jobRepository;
     private final AuditEventRepository auditRepository;
     private final Clock clock;
-    private final ReceiptMetrics metrics;
 
     @Transactional
-    public int recoverExpired(int batchSize) {
+    public void recoverExpired(int batchSize) {
         if (batchSize <= 0) throw new IllegalArgumentException("batchSize는 1 이상이어야 합니다.");
         Instant now = Instant.now(clock);
         List<ReceiptExtractionJob> expiredJobs = jobRepository.lockExpiredJobs(now, batchSize);
@@ -36,8 +34,6 @@ public class ExpiredJobRecoveryService {
             auditRepository.save(new AuditEvent(job.receiptId(), now, "system",
                     AuditAction.EXTRACTION_JOB_RECOVERED, null, null, details));
         }
-        metrics.recordRecoveredJobs(expiredJobs.size());
-        return expiredJobs.size();
     }
 
     private Map<String, Object> recoveryDetails(ReceiptExtractionJob job) {

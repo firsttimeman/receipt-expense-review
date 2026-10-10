@@ -34,7 +34,7 @@ public class ReceiptWorkerConfiguration {
         executor.setCorePoolSize(properties.getConcurrency());
         executor.setMaxPoolSize(properties.getConcurrency());
         // 실행을 마친 스레드가 다음 Job을 즉시 보충할 때의 짧은 인계 공간이다.
-        // Semaphore가 실행 중 + 대기 중 작업 합계를 concurrency 이하로 제한한다.
+        // Worker의 Semaphore가 선점 중 + 실행 중 + 대기 중 작업 합계를 concurrency 이하로 제한한다.
         executor.setQueueCapacity(properties.getConcurrency());
         executor.setThreadNamePrefix("receipt-extraction-");
         executor.setWaitForTasksToCompleteOnShutdown(false);

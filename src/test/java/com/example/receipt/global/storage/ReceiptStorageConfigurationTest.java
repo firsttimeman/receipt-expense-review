@@ -12,16 +12,8 @@ class ReceiptStorageConfigurationTest {
             .withUserConfiguration(ReceiptStorageConfiguration.class);
 
     @Test
-    void defaultsToLocalWithoutCreatingAnAwsClient() {
-        runner.run(context -> {
-            assertThat(context).hasNotFailed().hasSingleBean(ReceiptImageStorage.class).doesNotHaveBean(S3Client.class);
-            assertThat(context.getBean(ReceiptImageStorage.class)).isInstanceOf(LocalReceiptImageStorage.class);
-        });
-    }
-
-    @Test
-    void selectsS3OnlyWhenConfigured() {
-        runner.withPropertyValues("receipt.storage.provider=s3", "receipt.storage.s3.bucket=receipt-test")
+    void usesS3WithoutAStorageProviderSetting() {
+        runner.withPropertyValues("receipt.storage.s3.bucket=receipt-test")
                 .run(context -> {
                     assertThat(context).hasNotFailed().hasSingleBean(ReceiptImageStorage.class).hasSingleBean(S3Client.class);
                     assertThat(context.getBean(ReceiptImageStorage.class)).isInstanceOf(S3ReceiptImageStorage.class);
@@ -29,8 +21,8 @@ class ReceiptStorageConfigurationTest {
     }
 
     @Test
-    void missingBucketFailsAtStartupInsteadOfFallingBackToLocal() {
-        runner.withPropertyValues("receipt.storage.provider=s3").run(context -> {
+    void missingBucketFailsAtStartup() {
+        runner.run(context -> {
             assertThat(context).hasFailed();
             assertThat(context.getStartupFailure()).hasRootCauseInstanceOf(IllegalArgumentException.class)
                     .hasStackTraceContaining("receipt.storage.s3.bucket");
@@ -38,13 +30,25 @@ class ReceiptStorageConfigurationTest {
     }
 
     @Test
-    void invalidProviderFailsAtStartup() {
-        runner.withPropertyValues("receipt.storage.provider=typo").run(context -> assertThat(context).hasFailed());
+    void blankBucketFailsAtStartup() {
+        runner.withPropertyValues("receipt.storage.s3.bucket=").run(context -> {
+            assertThat(context).hasFailed();
+            assertThat(context.getStartupFailure()).hasStackTraceContaining("receipt.storage.s3.bucket");
+        });
+    }
+
+    @Test
+    void blankRegionFailsAtStartup() {
+        runner.withPropertyValues("receipt.storage.s3.bucket=receipt-test", "receipt.storage.s3.region=")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure()).hasStackTraceContaining("receipt.storage.s3.region");
+                });
     }
 
     @Test
     void invalidEndpointFailsAtStartup() {
-        runner.withPropertyValues("receipt.storage.provider=s3", "receipt.storage.s3.bucket=receipt-test",
+        runner.withPropertyValues("receipt.storage.s3.bucket=receipt-test",
                         "receipt.storage.s3.endpoint=file:///tmp/images")
                 .run(context -> {
                     assertThat(context).hasFailed();

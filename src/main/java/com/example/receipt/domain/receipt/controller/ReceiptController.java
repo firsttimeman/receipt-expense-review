@@ -1,5 +1,6 @@
 package com.example.receipt.domain.receipt.controller;
 
+import com.example.receipt.domain.employee.service.CurrentEmployeeService;
 import com.example.receipt.domain.receipt.dto.AuditEventResponse;
 import com.example.receipt.domain.receipt.dto.CorrectFieldsRequest;
 import com.example.receipt.domain.receipt.dto.ReceiptAcceptedResponse;
@@ -28,7 +29,7 @@ import java.util.List;
 @Validated
 @RequiredArgsConstructor
 public class ReceiptController {
-    private final com.example.receipt.domain.employee.service.CurrentEmployee current;
+    private final CurrentEmployeeService currentEmployeeService;
     private final ReceiptUploadService uploadService;
     private final ReceiptQueryService queryService;
     private final ReceiptCommandService commandService;
@@ -36,13 +37,13 @@ public class ReceiptController {
     /** 모든 역할에서 로그인한 직원 본인의 제출 목록만 반환합니다. */
     @GetMapping
     public ReceiptPageResponse mine(@Valid @ModelAttribute ReceiptListRequest request) {
-        return queryService.mine(request);
+        return queryService.findMyReceipts(request);
     }
 
     /** 검수자 본인 제출 건과 소유자 없는 과거 자료는 검수 대기 목록에서 제외합니다. */
     @GetMapping("/review-queue")
     public ReceiptPageResponse reviewQueue(@Valid @ModelAttribute ReceiptListRequest request) {
-        return queryService.reviewQueue(request);
+        return queryService.findReviewQueue(request);
     }
 
     /**
@@ -54,7 +55,7 @@ public class ReceiptController {
             @Size(max = 100) String idempotencyKey,
             @RequestPart("file") MultipartFile file) throws IOException {
         UploadResult result = uploadService.upload("internal", idempotencyKey, file.getOriginalFilename(),
-                file.getContentType(), file.getBytes(), current.require().id());
+                file.getContentType(), file.getBytes(), currentEmployeeService.getCurrentEmployee().id());
         ReceiptAcceptedResponse body = ReceiptAcceptedResponse.from(result);
         if (result.created()) {
             return ResponseEntity.accepted()
@@ -68,23 +69,23 @@ public class ReceiptController {
 
     @GetMapping("/{id}")
     public ReceiptResponse get(@PathVariable Long id) {
-        return ReceiptResponse.from(queryService.get(id), queryService.getJob(id).status());
+        return ReceiptResponse.from(queryService.getReceipt(id), queryService.getExtractionJob(id).status());
     }
 
     @GetMapping("/{id}/audit-events")
     public List<AuditEventResponse> auditEvents(@PathVariable Long id) {
-        return queryService.auditLog(id).stream().map(AuditEventResponse::from).toList();
+        return queryService.getAuditEvents(id).stream().map(AuditEventResponse::from).toList();
     }
 
     @PatchMapping("/{id}/fields")
     public ReceiptResponse correctFields(@PathVariable Long id, @Valid @RequestBody CorrectFieldsRequest request) {
         return ReceiptResponse.from(commandService.correctFields(id, request.version(),
-                request.toCorrections()), queryService.getJob(id).status());
+                request.toCorrections()), queryService.getExtractionJob(id).status());
     }
 
     @PostMapping("/{id}/decision")
     public ReceiptResponse decide(@PathVariable Long id, @Valid @RequestBody ReviewDecisionRequest request) {
         return ReceiptResponse.from(commandService.decide(id, request.version(),
-                request.decision(), request.note()), queryService.getJob(id).status());
+                request.decision(), request.note()), queryService.getExtractionJob(id).status());
     }
 }

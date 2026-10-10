@@ -14,7 +14,7 @@ public record ReceiptListItemResponse(
         Long ownerEmployeeId,
         ReceiptStatus status,
         ExtractionJobStatus jobStatus,
-        String merchant,
+        String shopName,
         LocalDate date,
         BigDecimal totalAmount,
         String originalFileName,
@@ -24,7 +24,7 @@ public record ReceiptListItemResponse(
     public static ReceiptListItemResponse from(Receipt receipt, ExtractionJobStatus jobStatus) {
         var data = receipt.currentData();
         return new ReceiptListItemResponse(receipt.id(), receipt.version(), receipt.ownerEmployeeId(),
-                receipt.status(), jobStatus, data == null ? null : data.merchant(),
+                receipt.status(), jobStatus, data == null ? null : data.shopName(),
                 data == null ? null : data.date(), data == null ? null : data.totalAmount(),
                 receipt.originalFileName(), receipt.createdAt(), receipt.updatedAt());
     }

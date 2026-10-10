@@ -302,6 +302,7 @@ class RedisSessionIntegrationTest {
                 "--spring.session.redis.namespace=receipt:distributed-test:session",
                 "--server.servlet.session.cookie.secure=false",
                 "--receipt.worker.enabled=false",
+                "--receipt.storage.s3.bucket=session-test-unused",
                 "--receipt.extractor.provider=fake",
                 "--spring.main.banner-mode=off",
                 "--logging.level.root=WARN");

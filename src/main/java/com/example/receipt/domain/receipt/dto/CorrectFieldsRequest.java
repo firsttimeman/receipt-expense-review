@@ -11,7 +11,7 @@ import java.util.Set;
 
 public record CorrectFieldsRequest(
         @NotNull @PositiveOrZero Long version,
-        String merchant,
+        String shopName,
         LocalDate date,
         BigDecimal totalAmount,
         String businessRegistrationNumber,
@@ -20,7 +20,7 @@ public record CorrectFieldsRequest(
         Set<@NotNull String> clearFields
 ) {
     public FieldCorrections toCorrections() {
-        return new FieldCorrections(merchant, date, totalAmount, businessRegistrationNumber,
+        return new FieldCorrections(shopName, date, totalAmount, businessRegistrationNumber,
                 paymentMethod, lineItems, clearFields);
     }
 }

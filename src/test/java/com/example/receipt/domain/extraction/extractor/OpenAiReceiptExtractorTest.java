@@ -1,8 +1,10 @@
 package com.example.receipt.domain.extraction.extractor;
 
 import com.example.receipt.domain.extraction.dto.ExtractionRequest;
+import com.example.receipt.domain.extraction.dto.ExtractionResult;
 import com.example.receipt.domain.extraction.exception.ExtractionException;
 import com.example.receipt.global.config.ReceiptProperties;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
@@ -11,12 +13,16 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.time.Duration;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class OpenAiReceiptExtractorTest {
     private HttpServer server;
+
+    private volatile JsonNode lastRequest;
 
     @AfterEach
     void stopServer() {
@@ -71,6 +77,28 @@ class OpenAiReceiptExtractorTest {
         assertThat(exception.getMessage()).contains("OpenAI");
     }
 
+    @Test
+    void requestsAndReadsShopNameInStructuredOutput() throws Exception {
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+        String extractedData = """
+                {"shopName":"추출된 상점","date":"2026-10-01","totalAmount":12000,
+                 "businessRegistrationNumber":null,"paymentMethod":"신용카드","lineItems":[]}
+                """;
+        String body = mapper.writeValueAsString(Map.of("output", List.of(
+                Map.of("content", List.of(Map.of("type", "output_text", "text", extractedData))))));
+        startServer(200, body, Duration.ZERO);
+        OpenAiReceiptExtractor extractor = new OpenAiReceiptExtractor(
+                new ReceiptProperties.OpenAi("test-key", "test-model", baseUrl()), mapper);
+
+        ExtractionResult result = extractor.extract(
+                new ExtractionRequest(new byte[]{1}, "image/png", "receipt.png"));
+
+        assertThat(result.data().shopName()).isEqualTo("추출된 상점");
+        JsonNode schema = lastRequest.path("text").path("format").path("schema");
+        assertThat(schema.path("properties").has("shopName")).isTrue();
+        assertThat(schema.path("required").toString()).contains("\"shopName\"");
+    }
+
     private ExtractionException captureFailure(Duration responseTimeout) {
         OpenAiReceiptExtractor extractor = new OpenAiReceiptExtractor(
                 new ReceiptProperties.OpenAi("test-key", "test-model", baseUrl(),
@@ -87,6 +115,7 @@ class OpenAiReceiptExtractorTest {
         server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/v1/responses", exchange -> {
             try {
+                lastRequest = new ObjectMapper().readTree(exchange.getRequestBody());
                 if (!delay.isZero()) Thread.sleep(delay.toMillis());
                 byte[] bytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
                 exchange.getResponseHeaders().set("Content-Type", "application/json");

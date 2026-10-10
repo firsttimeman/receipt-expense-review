@@ -1,6 +1,8 @@
 package com.example.receipt.domain.receipt.service;
 
+import com.example.receipt.domain.employee.entity.Employee;
 import com.example.receipt.domain.employee.model.EmployeeRole;
+import com.example.receipt.domain.employee.service.CurrentEmployeeService;
 import com.example.receipt.domain.receipt.dto.FieldCorrections;
 import com.example.receipt.domain.receipt.entity.AuditEvent;
 import com.example.receipt.domain.receipt.entity.Receipt;
@@ -16,24 +18,32 @@ import com.example.receipt.domain.receipt.repository.ReceiptRepository;
 import com.example.receipt.domain.receipt.validation.ReceiptStatusRouter;
 import com.example.receipt.domain.receipt.validation.ValidationEngine;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 import java.time.Instant;
-import java.util.*;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
+/** 영수증 내용 수정과 승인·반려를 처리합니다. */
 @Service
 @RequiredArgsConstructor
-/**
- * 최종적인 승인 단계 필드를 지우고 수정할지를 결정
- */
 public class ReceiptCommandService {
     private static final Set<String> CLEARABLE_FIELDS = Set.of(
-            "merchant", "date", "totalAmount", "businessRegistrationNumber", "paymentMethod", "lineItems");
+            "shopName", "date", "totalAmount", "businessRegistrationNumber", "paymentMethod", "lineItems");
 
-    private final ReceiptAccess access;
-    private final com.example.receipt.domain.employee.service.CurrentEmployee current;
+    private static final Set<ReceiptStatus> EMPLOYEE_EDITABLE_STATUSES = Set.of(
+            ReceiptStatus.NEEDS_REVIEW,
+            ReceiptStatus.NEEDS_RECAPTURE,
+            ReceiptStatus.UNREADABLE,
+            ReceiptStatus.MANUAL_ENTRY
+    );
+
+    private final CurrentEmployeeService currentEmployeeService;
     private final ReceiptRepository receiptRepository;
     private final AuditEventRepository auditRepository;
     private final ValidationEngine validationEngine;
@@ -46,10 +56,13 @@ public class ReceiptCommandService {
         if (!CLEARABLE_FIELDS.containsAll(corrections.getClearFields())) {
             throw new IllegalArgumentException("지원하지 않는 clearFields 값이 포함되어 있습니다.");
         }
-        Receipt receipt = get(receiptId);
-        access.modify(receipt);
+
+        Employee employee = currentEmployeeService.getCurrentEmployee();
+        Receipt receipt = findReceipt(receiptId);
+
+        validateModifyPermission(receipt, employee);
         ensureVersion(receipt, expectedVersion);
-        ensureNotTerminal(receipt);
+        validateEditableStatus(receipt);
 
         ReceiptData before = receipt.currentData();
         ReceiptData after = corrections.applyTo(before);
@@ -59,7 +72,6 @@ public class ReceiptCommandService {
         ReceiptStatus previousStatus = receipt.status();
         ReceiptStatus nextStatus = statusRouter.route(after, results);
         if (nextStatus == ReceiptStatus.AUTO_APPROVED) {
-            var employee = current.require();
             // 직원 보정과 본인 영수증 보정은 규칙을 통과해도 다른 검수자의 확인이 필요합니다.
             if (employee.role() == EmployeeRole.EMPLOYEE || employee.id().equals(receipt.ownerEmployeeId())) {
                 nextStatus = ReceiptStatus.NEEDS_REVIEW;
@@ -69,7 +81,8 @@ public class ReceiptCommandService {
         receipt.updateData(after, results, nextStatus, now);
 
         Map<String, Object> correctionDetails = createCorrectionDetails(before, after, results);
-        auditRepository.save(new AuditEvent(receipt.id(), now, current.actor(),
+        String actor = "employee:" + employee.id();
+        auditRepository.save(new AuditEvent(receipt.id(), now, actor,
                 AuditAction.FIELDS_CORRECTED, previousStatus, nextStatus,
                 correctionDetails));
         receiptRepository.flush();
@@ -79,10 +92,12 @@ public class ReceiptCommandService {
     @Transactional
     public Receipt decide(Long receiptId, long expectedVersion,
                           ReviewDecision decision, String note) {
-        Receipt receipt = get(receiptId);
-        access.review(receipt);
+        Employee employee = currentEmployeeService.getCurrentEmployee();
+        Receipt receipt = findReceipt(receiptId);
+
+        validateReviewPermission(receipt, employee);
         ensureVersion(receipt, expectedVersion);
-        ensureNotTerminal(receipt);
+        validateEditableStatus(receipt);
         if (receipt.status() == ReceiptStatus.NEEDS_RECAPTURE || receipt.status() == ReceiptStatus.UNREADABLE) {
             throw new ReceiptConflictException("재촬영 또는 판독 불가 상태는 필드를 보완한 뒤 결정해야 합니다.");
         }
@@ -94,14 +109,50 @@ public class ReceiptCommandService {
         Instant now = Instant.now(clock);
         receipt.changeStatus(next, now);
         Map<String, Object> decisionDetails = createDecisionDetails(note);
-        auditRepository.save(new AuditEvent(receipt.id(), now, current.actor(),
+        String actor = "employee:" + employee.id();
+        auditRepository.save(new AuditEvent(receipt.id(), now, actor,
                 action, previous, next, decisionDetails));
         receiptRepository.flush();
         return receipt;
     }
 
-    private Receipt get(Long id) {
+    private Receipt findReceipt(Long id) {
         return receiptRepository.findById(id).orElseThrow(() -> new ReceiptNotFoundException(id));
+    }
+
+    private void validateModifyPermission(Receipt receipt, Employee employee) {
+        if (receipt.ownerEmployeeId() == null) {
+            if (employee.role() != EmployeeRole.ADMIN) {
+                throw new ReceiptNotFoundException(receipt.id());
+            }
+            throw new ReceiptConflictException("소유자가 없는 영수증은 수정할 수 없습니다.");
+        }
+
+        // 검수자와 관리자는 다른 직원의 영수증도 수정할 수 있습니다.
+        if (employee.role() != EmployeeRole.EMPLOYEE) {
+            return;
+        }
+
+        if (!employee.id().equals(receipt.ownerEmployeeId())) {
+            throw new ReceiptNotFoundException(receipt.id());
+        }
+
+        ReceiptStatus status = receipt.status();
+        if (status == null || !EMPLOYEE_EDITABLE_STATUSES.contains(status)) {
+            throw new ReceiptConflictException("이 상태의 영수증은 직원이 수정할 수 없습니다.");
+        }
+    }
+
+    private void validateReviewPermission(Receipt receipt, Employee employee) {
+        if (employee.role() == EmployeeRole.EMPLOYEE) {
+            throw new AccessDeniedException("검토 권한이 필요합니다.");
+        }
+
+        validateModifyPermission(receipt, employee);
+
+        if (employee.id().equals(receipt.ownerEmployeeId())) {
+            throw new AccessDeniedException("본인이 제출한 영수증은 승인하거나 반려할 수 없습니다.");
+        }
     }
 
     private void ensureVersion(Receipt receipt, long expectedVersion) {
@@ -110,7 +161,7 @@ public class ReceiptCommandService {
         }
     }
 
-    private void ensureNotTerminal(Receipt receipt) {
+    private void validateEditableStatus(Receipt receipt) {
         if (receipt.status() == null) {
             throw new ReceiptConflictException("AI 추출 작업이 완료된 뒤 검수할 수 있습니다.");
         }

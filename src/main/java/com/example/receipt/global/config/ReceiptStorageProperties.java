@@ -10,15 +10,7 @@ import java.time.Duration;
 @Setter
 @ConfigurationProperties(prefix = "receipt.storage")
 public class ReceiptStorageProperties {
-    private Provider provider = Provider.LOCAL;
-
-    private String localDirectory = "./runtime/receipt-images";
-
     private S3 s3 = new S3();
-
-    public enum Provider {
-        LOCAL, S3
-    }
 
     @Getter
     @Setter

@@ -4,14 +4,12 @@ import com.example.receipt.domain.receipt.exception.ReceiptConflictException;
 import lombok.RequiredArgsConstructor;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
-import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 @Component
-@Profile("!test")
 @RequiredArgsConstructor
 public class RedisDuplicateReceiptLock implements DuplicateReceiptLock {
     private static final long LOCK_WAIT_SECONDS = 3;

@@ -4,9 +4,7 @@ import lombok.Getter;
 import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-import java.math.BigDecimal;
 import java.time.Duration;
-import java.util.List;
 
 @Getter
 @Setter
@@ -14,16 +12,14 @@ import java.util.List;
 public class ReceiptProperties {
     private Extractor extractor = new Extractor();
     private Quality quality = new Quality();
-    private Policy policy = new Policy();
     private OpenAi openai = new OpenAi();
 
     public ReceiptProperties() {
     }
 
-    public ReceiptProperties(Extractor extractor, Quality quality, Policy policy, OpenAi openai) {
+    public ReceiptProperties(Extractor extractor, Quality quality, OpenAi openai) {
         this.extractor = extractor;
         this.quality = quality;
-        this.policy = policy;
         this.openai = openai;
     }
 
@@ -52,24 +48,6 @@ public class ReceiptProperties {
         public Quality(int minWidth, int minHeight) {
             this.minWidth = minWidth;
             this.minHeight = minHeight;
-        }
-    }
-
-    @Getter
-    @Setter
-    public static class Policy {
-        private BigDecimal maxAmount = new BigDecimal("300000");
-        private boolean weekendRequiresReview = true;
-        private List<String> prohibitedMerchantKeywords = List.of("유흥", "카지노", "성인");
-
-        public Policy() {
-        }
-
-        public Policy(BigDecimal maxAmount, boolean weekendRequiresReview,
-                      List<String> prohibitedMerchantKeywords) {
-            this.maxAmount = maxAmount;
-            this.weekendRequiresReview = weekendRequiresReview;
-            this.prohibitedMerchantKeywords = prohibitedMerchantKeywords;
         }
     }
 

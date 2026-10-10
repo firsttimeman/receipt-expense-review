@@ -3,7 +3,6 @@ package com.example.receipt.domain.receipt.validation;
 import com.example.receipt.domain.receipt.model.ReceiptData;
 import com.example.receipt.domain.receipt.model.ReceiptStatus;
 import com.example.receipt.domain.receipt.model.RuleResult;
-import com.example.receipt.global.config.ReceiptProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -19,20 +18,15 @@ class ValidationEngineTest {
 
     @BeforeEach
     void setUp() {
-        ReceiptProperties properties = new ReceiptProperties(
-                new ReceiptProperties.Extractor("fake"),
-                new ReceiptProperties.Quality(600, 600),
-                new ReceiptProperties.Policy(new BigDecimal("300000"), true, List.of("카지노")),
-                new ReceiptProperties.OpenAi("", "gpt-5.4-mini", "https://api.openai.com"));
         Clock clock = Clock.fixed(Instant.parse("2026-08-18T00:00:00Z"), ZoneId.of("Asia/Seoul"));
-        engine = new ValidationEngine(properties, new BusinessRegistrationNumberValidator(), clock);
+        engine = new ValidationEngine(new BusinessRegistrationNumberValidator(), clock);
         router = new ReceiptStatusRouter();
     }
 
     @Test
-    void clearWeekdayReceiptIsAutoApproved() {
-        ReceiptData data = new ReceiptData("테스트상점", LocalDate.of(2026, 1, 15),
-                new BigDecimal("12000"), null, "카드", List.of());
+    void validReceiptIsAutoApprovedWithoutExpensePolicyChecks() {
+        ReceiptData data = new ReceiptData("카지노", LocalDate.of(2026, 1, 17),
+                new BigDecimal("500000"), null, "카드", List.of());
         List<RuleResult> results = engine.validate(data, false);
 
         assertThat(results).noneMatch(RuleResult::failed);
@@ -40,13 +34,13 @@ class ValidationEngineTest {
     }
 
     @Test
-    void weekendOverLimitAndDuplicateNeedReview() {
-        ReceiptData data = new ReceiptData("테스트상점", LocalDate.of(2026, 1, 17),
+    void duplicateSubmissionNeedsReview() {
+        ReceiptData data = new ReceiptData("테스트상점", LocalDate.of(2026, 1, 15),
                 new BigDecimal("500000"), null, "카드", List.of());
         List<RuleResult> results = engine.validate(data, true);
 
         assertThat(results).filteredOn(RuleResult::failed).extracting(RuleResult::code)
-                .contains("POLICY_WEEKEND", "POLICY_AMOUNT_LIMIT", "DUPLICATE_SUBMISSION");
+                .containsExactly("DUPLICATE_SUBMISSION");
         assertThat(router.route(data, results)).isEqualTo(ReceiptStatus.NEEDS_REVIEW);
     }
 

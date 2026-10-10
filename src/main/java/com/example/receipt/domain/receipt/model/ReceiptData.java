@@ -5,7 +5,7 @@ import java.time.LocalDate;
 import java.util.List;
 
 public record ReceiptData(
-        String merchant,
+        String shopName,
         LocalDate date,
         BigDecimal totalAmount,
         String businessRegistrationNumber,
@@ -13,7 +13,7 @@ public record ReceiptData(
         List<LineItem> lineItems
 ) {
     public ReceiptData {
-        merchant = normalize(merchant);
+        shopName = normalize(shopName);
         businessRegistrationNumber = normalize(businessRegistrationNumber);
         paymentMethod = normalize(paymentMethod);
         lineItems = lineItems == null ? List.of() : List.copyOf(lineItems);
