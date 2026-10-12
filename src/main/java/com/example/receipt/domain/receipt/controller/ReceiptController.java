@@ -69,7 +69,7 @@ public class ReceiptController {
 
     @GetMapping("/{id}")
     public ReceiptResponse get(@PathVariable Long id) {
-        return ReceiptResponse.from(queryService.getReceipt(id), queryService.getExtractionJob(id).status());
+        return queryService.getReceiptDetail(id);
     }
 
     @GetMapping("/{id}/audit-events")

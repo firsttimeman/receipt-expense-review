@@ -9,6 +9,7 @@ import com.example.receipt.domain.extraction.repository.ReceiptExtractionJobRepo
 import com.example.receipt.domain.receipt.dto.ReceiptListItemResponse;
 import com.example.receipt.domain.receipt.dto.ReceiptListRequest;
 import com.example.receipt.domain.receipt.dto.ReceiptPageResponse;
+import com.example.receipt.domain.receipt.dto.ReceiptResponse;
 import com.example.receipt.domain.receipt.entity.AuditEvent;
 import com.example.receipt.domain.receipt.entity.Receipt;
 import com.example.receipt.domain.receipt.exception.ReceiptNotFoundException;
@@ -73,6 +74,16 @@ public class ReceiptQueryService {
         );
 
         return createPageResponse(receiptPage);
+    }
+
+    /** MySQL 기본 격리 수준(REPEATABLE READ)에서 영수증과 작업 상태를 같은 스냅샷으로 읽습니다. */
+    @Transactional(readOnly = true)
+    public ReceiptResponse getReceiptDetail(Long receiptId) {
+        Receipt receipt = getReceipt(receiptId);
+        ReceiptExtractionJob job = extractionJobRepository.findByReceiptId(receiptId)
+                .orElseThrow(() -> new ReceiptNotFoundException(receiptId));
+
+        return ReceiptResponse.from(receipt, job.status());
     }
 
     public Receipt getReceipt(Long receiptId) {
