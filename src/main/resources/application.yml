@@ -32,7 +32,7 @@ spring:
 receipt:
   storage:
     s3:
-      bucket: ${RECEIPT_S3_BUCKET:}
+      bucket: ${RECEIPT_S3_BUCKET:receipt-expense-dev-sanghwa-20261010}
       region: ${RECEIPT_S3_REGION:ap-northeast-2}
       prefix: ${RECEIPT_S3_PREFIX:receipt-images}
       endpoint: ${RECEIPT_S3_ENDPOINT:}
