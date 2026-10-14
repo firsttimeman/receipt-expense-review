@@ -1,0 +1,83 @@
+# 한 서버에 앱, MySQL, Redis를 배포하는 초기 구성입니다.
+# 로컬용 docker-compose.yml과 합치지 않고 scripts/deploy.sh로 실행합니다.
+services:
+  app:
+    image: receipt-expense-review:${APP_IMAGE_TAG:-local}
+    build:
+      context: .
+    restart: unless-stopped
+    mem_limit: ${APP_MEMORY_LIMIT:-1g}
+    ports:
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      DB_URL: jdbc:mysql://mysql:3306/receipt_review?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=utf8
+      DB_USERNAME: receipt_user
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD를 설정하세요}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      SESSION_REDIS_NAMESPACE: ${SESSION_REDIS_NAMESPACE:-receipt:session}
+      SESSION_TIMEOUT: ${SESSION_TIMEOUT:-30m}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
+      RECEIPT_S3_BUCKET: ${RECEIPT_S3_BUCKET:?S3 버킷을 설정하세요}
+      RECEIPT_S3_REGION: ${RECEIPT_S3_REGION:-ap-northeast-2}
+      RECEIPT_S3_PREFIX: ${RECEIPT_S3_PREFIX:-receipt-images}
+      RECEIPT_EXTRACTOR_PROVIDER: ${RECEIPT_EXTRACTOR_PROVIDER:-openai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4-mini}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com}
+      RECEIPT_WORKER_CONCURRENCY: ${RECEIPT_WORKER_CONCURRENCY:-4}
+      RECEIPT_WORKER_BATCH_SIZE: ${RECEIPT_WORKER_BATCH_SIZE:-4}
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=70.0 -XX:+ExitOnOutOfMemoryError
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    stop_grace_period: 40s
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: receipt_review
+      MYSQL_USER: receipt_user
+      MYSQL_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD를 설정하세요}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD를 설정하세요}
+      TZ: Asia/Seoul
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql --protocol=TCP -h 127.0.0.1 -u \"$$MYSQL_USER\" -D \"$$MYSQL_DATABASE\" -e 'SELECT 1' >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      start_period: 30s
+      retries: 30
+    volumes:
+      - mysql-data:/var/lib/mysql
+    logging: *logging
+
+  redis:
+    image: redis:7.2-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - redis-data:/data
+    logging: *logging
+
+# MySQL/Redis는 호스트에 포트를 공개하지 않고 앱과 Docker 내부망으로 통신합니다.
+# 다른 서버로 확장할 때는 모든 앱이 같은 MySQL/Redis를 사용하도록 변경해야 합니다.
+volumes:
+  mysql-data:
+  redis-data:

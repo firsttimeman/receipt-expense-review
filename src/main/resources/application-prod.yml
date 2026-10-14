@@ -1,0 +1,25 @@
+# prod에서는 로컬 DB나 개발 버킷 기본값으로 연결되지 않도록 필수 값을 지정합니다.
+spring:
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+  data:
+    redis:
+      host: ${REDIS_HOST}
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+receipt:
+  storage:
+    s3:
+      bucket: ${RECEIPT_S3_BUCKET}
+
+server:
+  shutdown: graceful
+  servlet:
+    session:
+      cookie:
+        secure: ${SESSION_COOKIE_SECURE:true}
+  error:
+    include-message: never

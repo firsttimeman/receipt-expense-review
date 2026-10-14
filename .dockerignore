@@ -1,0 +1,16 @@
+# 빌드에 필요한 파일만 전송합니다. IDE의 키, 원본 사진, .env 등은 포함되지 않습니다.
+**
+!Dockerfile
+!gradlew
+!build.gradle
+!settings.gradle
+!gradle/
+!gradle/**
+!src/
+!src/main/
+!src/main/**
+**/application-local.*
+**/.env*
+**/*.key
+**/*.pem
+**/.DS_Store
