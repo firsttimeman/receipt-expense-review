@@ -12,6 +12,9 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.web.servlet.context.ServletWebServerApplicationContext;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -22,6 +25,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
@@ -38,8 +42,10 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
+import java.util.Base64;
 import java.util.HexFormat;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -143,14 +149,55 @@ class S3ReceiptStorageIntegrationTest {
             assertThat(events.toString()).contains("EXTRACTION_COMPLETED").doesNotContain("EXTRACTION_FAILED");
             var objects = client.listObjectsV2(request -> request.bucket(BUCKET).prefix("integration/")).contents();
             assertThat(objects).hasSize(1);
-            assertThat(client.getObjectAsBytes(request -> request.bucket(BUCKET).key(objects.get(0).key())).asByteArray())
-                    .isEqualTo(png);
+            assertThat(objects.get(0).key()).endsWith(".png");
+            var stored = client.getObjectAsBytes(request -> request.bucket(BUCKET).key(objects.get(0).key()));
+            assertThat(stored.response().contentType()).isEqualTo("image/png");
+            assertThat(stored.asByteArray()).isEqualTo(png);
         }
+    }
+
+    @ParameterizedTest
+    @MethodSource("imageFormats")
+    void storesMatchingExtensionAndContentTypeWithoutChangingBytes(byte[] bytes, String extension,
+                                                                   String contentType) throws Exception {
+        var storage = new S3ReceiptImageStorage(client, BUCKET, "formats");
+        String sha = sha256(bytes);
+
+        String key = storage.store("internal", sha, bytes);
+
+        assertThat(key).endsWith("/" + sha + "." + extension);
+        var stored = client.getObjectAsBytes(request -> request.bucket(BUCKET).key("formats/" + key));
+        assertThat(stored.response().contentType()).isEqualTo(contentType);
+        assertThat(stored.asByteArray()).isEqualTo(bytes);
+        assertThat(storage.load(key)).isEqualTo(bytes);
+    }
+
+    private static Stream<Arguments> imageFormats() throws Exception {
+        byte[] webp = Base64.getDecoder().decode("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA");
+        return Stream.of(
+                Arguments.of(image("jpg"), "jpg", "image/jpeg"),
+                Arguments.of(image("png"), "png", "image/png"),
+                Arguments.of(webp, "webp", "image/webp"),
+                Arguments.of(new byte[]{(byte) 0xFF, (byte) 0xD8}, "bin", "application/octet-stream"),
+                Arguments.of("<html>not an image</html>".getBytes(StandardCharsets.UTF_8),
+                        "bin", "application/octet-stream"));
+    }
+
+    @Test
+    void stillReadsImagesStoredUnderExistingBinKeys() throws Exception {
+        byte[] bytes = png();
+        String key = "old-company/" + sha256(bytes) + ".bin";
+        client.putObject(request -> request.bucket(BUCKET).key("legacy/" + key)
+                .contentType("application/octet-stream"), RequestBody.fromBytes(bytes));
+
+        var storage = new S3ReceiptImageStorage(client, BUCKET, "legacy");
+
+        assertThat(storage.load(key)).isEqualTo(bytes);
     }
 
     @Test
     void repeatedWritesReuseTheSameS3ObjectAndPrefixesAreOptional() throws Exception {
-        byte[] bytes = "storage-repeat-fixture".getBytes(StandardCharsets.UTF_8);
+        byte[] bytes = png();
         String sha = sha256(bytes);
         var storage = new S3ReceiptImageStorage(client, BUCKET, "/repeated/");
         String storageKey = storage.store("internal", sha, bytes);
@@ -201,8 +248,12 @@ class S3ReceiptStorageIntegrationTest {
     }
 
     private byte[] png() throws Exception {
+        return image("png");
+    }
+
+    private static byte[] image(String format) throws Exception {
         var out = new ByteArrayOutputStream();
-        ImageIO.write(new BufferedImage(800, 800, BufferedImage.TYPE_INT_RGB), "png", out);
+        ImageIO.write(new BufferedImage(800, 800, BufferedImage.TYPE_INT_RGB), format, out);
         return out.toByteArray();
     }
 

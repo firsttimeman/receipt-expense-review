@@ -10,11 +10,11 @@ final class ReceiptImageKey {
     private ReceiptImageKey() {
     }
 
-    static String create(String companyId, String imageSha256) {
+    static String create(String companyId, String imageSha256, ReceiptImageFormat format) {
         try {
             String companyHash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                     .digest(companyId.getBytes(StandardCharsets.UTF_8)));
-            return companyHash.substring(0, 16) + "/" + imageSha256 + ".bin";
+            return companyHash.substring(0, 16) + "/" + imageSha256 + "." + format.extension();
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256을 사용할 수 없습니다.", exception);
         }

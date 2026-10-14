@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>영수증 작업실</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/assets/receipt-app.css">
+    <script src="/assets/receipt-app.js" defer></script>
+</head>
+<body>
+<div class="shell">
+    <aside class="sidebar">
+        <a class="brand" href="/" aria-label="영수증 작업실 홈"><span class="brand-icon">▤</span><span>영수증 작업실<small>RECEIPT WORKSPACE</small></span></a>
+        <div class="workspace-label">우리 회사 · 경비 관리</div>
+        <nav aria-label="주 메뉴">
+            <button class="nav-item selected" data-view="mine" disabled><span>▤</span> 내 영수증</button>
+            <button class="nav-item" data-view="review" hidden><span>✓</span> 검수 대기</button>
+            <button class="nav-item" data-view="employees" hidden><span>＋</span> 직원 계정</button>
+        </nav>
+        <div class="sidebar-note"><span class="dot"></span> 로컬 테스트 화면<p>영수증 제출부터 검수까지<br>한 곳에서 확인하세요.</p></div>
+    </aside>
+    <main>
+        <header class="topbar"><span>사내 경비 관리 <span class="separator">/</span> <span id="breadcrumb">시작하기</span></span><span class="local-badge">LOCAL</span></header>
+        <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+        <section id="auth-screen" class="auth-layout">
+            <div class="intro"><span class="eyebrow">LESS PAPER, MORE CLARITY</span><h1>영수증 한 장,<br>간편하게 정리하세요.</h1><p>영수증을 올리면 필요한 정보를 추출합니다.<br>처리 결과를 확인하고, 필요한 내용만 수정하세요.</p><div class="steps"><span><b>01</b> 영수증 제출</span><span><b>02</b> 정보 추출</span><span><b>03</b> 확인 및 검수</span></div><div class="paper-card" aria-hidden="true"><span>RECEIPT</span><div class="paper-rule"></div><div class="paper-line"></div><div class="paper-line short"></div><div class="paper-rule"></div><strong>기록은 간편하게.</strong><small>확인은 꼼꼼하게.</small><div class="paper-check">✓</div></div></div>
+            <div class="card auth-card">
+                <div class="tabs" aria-label="계정 이용 방법"><button id="login-tab" type="button" class="active" aria-pressed="true">로그인</button><button id="setup-tab" type="button" aria-pressed="false">처음 비밀번호 설정</button></div>
+                <form id="login-form">
+                    <h2>다시 만나 반가워요</h2><p class="muted">발급받은 직원 계정으로 로그인하세요.</p>
+                    <label>로그인 ID<input name="loginId" autocomplete="username" required maxlength="64" placeholder="직원 로그인 ID"></label>
+                    <label>비밀번호<input name="password" type="password" autocomplete="current-password" required maxlength="72" placeholder="비밀번호 입력"></label>
+                    <button class="primary full" type="submit">로그인 <span>→</span></button>
+                    <p class="form-help">계정이 없다면 관리자에게 계정 발급을 요청하세요.<br>첫 관리자 계정은 서버에서 미리 준비해야 합니다.</p>
+                </form>
+                <form id="setup-form" hidden>
+                    <h2>첫 비밀번호 설정</h2><p class="muted">관리자가 발급한 일회용 설정 토큰을 입력하세요.</p>
+                    <label>설정 토큰<input name="token" autocomplete="off" spellcheck="false" required maxlength="100" placeholder="관리자에게 받은 토큰"></label>
+                    <label>새 비밀번호<input name="password" type="password" autocomplete="new-password" required minlength="12" maxlength="72" placeholder="12자 이상, UTF-8 기준 72바이트 이하"></label>
+                    <label>비밀번호 확인<input name="confirmPassword" type="password" autocomplete="new-password" required minlength="12" maxlength="72" placeholder="비밀번호를 한 번 더 입력"></label>
+                    <button class="primary full" type="submit">비밀번호 설정</button>
+                    <p class="form-help">설정 토큰은 발급 후 24시간 동안 한 번만 사용할 수 있습니다.</p>
+                </form>
+            </div>
+        </section>
+
+        <section id="workspace" hidden>
+            <div class="page-heading"><div><span class="eyebrow">YOUR EXPENSES, ORGANIZED</span><h1 id="page-title">내 영수증</h1><p id="page-description" class="muted">제출한 영수증과 처리 결과를 확인하세요.</p></div><div class="account"><span class="avatar" id="avatar">직</span><span><strong id="employee-name"></strong><small id="employee-role"></small></span><button id="logout-button" class="text-button" type="button">로그아웃</button></div></div>
+
+            <div id="receipts-view">
+                <section id="upload-panel" class="card upload-card">
+                    <div><span class="eyebrow">NEW RECEIPT</span><h2>영수증을 제출하세요</h2><p class="muted">이미지를 업로드하면 처리 상태가 자동으로 갱신됩니다.</p><p class="form-help">JPG · PNG · WEBP / 최대 10MB<br>가로와 세로 모두 600px 이상을 권장합니다.</p></div>
+                    <form id="upload-form">
+                        <label class="file-picker" for="receipt-file"><span class="upload-icon">↑</span><strong id="file-name">영수증 이미지 선택</strong><span class="muted">클릭하여 파일을 선택하세요</span><input id="receipt-file" name="file" type="file" accept="image/jpeg,image/png,image/webp" required></label>
+                        <div class="upload-actions"><img id="file-preview" alt="선택한 영수증 미리보기" hidden><button class="primary" type="submit">영수증 제출 <span>↗</span></button></div>
+                    </form>
+                </section>
+                <section class="card list-card">
+                    <div class="section-heading"><div><h2 id="list-title">제출 내역 <span id="receipt-count" class="count">0</span></h2><p class="muted" id="list-description">최근 제출한 순서대로 표시됩니다.</p></div><button id="refresh-list" class="secondary" type="button">↻ 새로고침</button></div>
+                    <form id="filter-form" class="filters"><label>처리 상태<select name="status" id="status-filter"><option value="">전체 상태</option><option value="AUTO_APPROVED">자동 승인</option><option value="NEEDS_REVIEW">검수 필요</option><option value="NEEDS_RECAPTURE">재촬영 필요</option><option value="MANUAL_ENTRY">직접 입력 필요</option><option value="UNREADABLE">판독 불가</option><option value="APPROVED">승인 완료</option><option value="REJECTED">반려</option></select></label><label>제출 시작일<input type="date" name="from"></label><span class="date-separator">—</span><label>제출 종료일<input type="date" name="to"></label><button class="secondary" type="submit">조회</button></form>
+                    <div class="table-scroll"><table><thead><tr><th>영수증 / 상호명</th><th>금액</th><th>처리 상태</th><th>제출일</th><th><span class="sr-only">상세 보기</span></th></tr></thead><tbody id="receipt-rows"></tbody></table></div>
+                    <div id="list-empty" class="empty"><span>▤</span><h3>아직 제출한 영수증이 없어요</h3><p>첫 영수증을 업로드해 보세요.</p></div>
+                    <div class="pagination"><span id="page-label">1 / 1 페이지</span><div><button id="previous-page" class="secondary" type="button" disabled>← 이전</button><button id="next-page" class="secondary" type="button" disabled>다음 →</button></div></div>
+                </section>
+            </div>
+
+            <section id="employees-view" hidden>
+                <div class="two-cards"><form id="issue-form" class="card padded"><span class="eyebrow">INVITE A TEAMMATE</span><h2>직원 계정 발급</h2><p class="muted">계정을 만들고 비밀번호 설정 토큰을 전달하세요.</p><label>로그인 ID<input name="loginId" required pattern="[a-z0-9._\-]{3,64}" minlength="3" maxlength="64" placeholder="영문 소문자, 숫자, . _ - / 3~64자"></label><label>이름<input name="name" required maxlength="100" placeholder="직원 이름"></label><label>역할<select name="role"><option value="EMPLOYEE">직원</option><option value="REVIEWER">검수자</option><option value="ADMIN">관리자</option></select></label><button class="primary" type="submit">계정 발급</button><div id="issued-result" class="result-box" hidden><strong id="issued-employee"></strong><label>일회용 비밀번호 설정 토큰<input id="issued-token" readonly autocomplete="off" spellcheck="false"></label><button id="copy-token" type="button" class="secondary">토큰 복사</button><p id="issued-expires" class="form-help"></p><p class="form-help">로그아웃 후 ‘처음 비밀번호 설정’에서 사용하세요. 이 화면을 벗어나면 토큰은 지워집니다.</p></div></form>
+                <form id="active-form" class="card padded"><span class="eyebrow">ACCOUNT STATUS</span><h2>직원 계정 상태 변경</h2><p class="muted">계정 발급 시 표시된 직원 번호를 입력하세요.</p><label>직원 번호<input name="employeeId" type="number" min="1" step="1" required placeholder="예: 2"></label><label>계정 상태<select name="active"><option value="false">비활성화</option><option value="true">활성화</option></select></label><button class="secondary" type="submit">상태 변경</button><p class="form-help">비활성화하면 해당 직원은 로그인할 수 없습니다.<br>본인 계정은 비활성화할 수 없습니다.</p></form></div>
+            </section>
+            <footer>영수증 작업실 <span>·</span> 사내 경비를 조금 더 간편하게</footer>
+        </section>
+    </main>
+</div>
+
+<dialog id="receipt-dialog" aria-labelledby="detail-title">
+    <div class="dialog-header"><div><span class="eyebrow" id="detail-id">RECEIPT</span><h2 id="detail-title">영수증 상세</h2></div><button id="close-detail" class="icon-button" type="button" aria-label="상세 닫기">×</button></div>
+    <div id="detail-notice" class="notice" role="status" aria-live="polite" hidden></div>
+    <div class="detail-summary"><span id="detail-status" class="badge"></span><span id="detail-job" class="muted"></span><button id="refresh-detail" class="text-button" type="button">↻ 다시 조회</button></div>
+    <p id="detail-hint" class="form-help"></p>
+    <form id="correction-form"><fieldset id="correction-fields"><div class="field-grid"><label>상호명<input name="shopName" placeholder="상호명"></label><label>사용일<input name="date" type="date"></label><label>총 금액 (원)<input name="totalAmount" type="number" min="0" step="0.01" placeholder="0"></label><label>결제 수단<input name="paymentMethod" placeholder="예: 신용카드"></label><label class="wide">사업자등록번호<input name="businessRegistrationNumber" placeholder="예: 123-45-67890"></label></div><div class="section-heading compact"><h3>구매 항목</h3><button id="add-line-item" class="text-button" type="button">＋ 항목 추가</button></div><div id="line-items"></div><p class="form-help">빈 값으로 저장한 필드는 기존 값이 지워집니다.</p><button class="primary" type="submit">수정 내용 저장</button></fieldset></form>
+    <form id="decision-form" class="decision-form" hidden><label>검수 의견<textarea name="note" rows="2" placeholder="승인 또는 반려에 대한 의견 (선택)"></textarea></label><div class="actions"><button class="secondary danger" type="submit" value="REJECT" name="decision">반려</button><button class="primary" type="submit" value="APPROVE" name="decision">승인</button></div></form>
+    <section class="detail-section"><h3>검증 결과</h3><ul id="rule-results" class="rule-results"></ul></section>
+    <details class="detail-section"><summary>처리 이력</summary><button id="refresh-audit" class="text-button" type="button">이력 불러오기</button><ol id="audit-events" class="audit-events"></ol></details>
+    <details class="detail-section"><summary>원본 추출 결과 · API 응답</summary><pre id="detail-json"></pre></details>
+</dialog>
+</body>
+</html>

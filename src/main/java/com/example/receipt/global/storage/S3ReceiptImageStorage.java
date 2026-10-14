@@ -22,11 +22,12 @@ public class S3ReceiptImageStorage implements ReceiptImageStorage {
 
     @Override
     public String store(String companyId, String imageSha256, byte[] bytes) {
-        String storageKey = ReceiptImageKey.create(companyId, imageSha256);
+        ReceiptImageFormat format = ReceiptImageFormat.detect(bytes);
+        String storageKey = ReceiptImageKey.create(companyId, imageSha256, format);
         PutObjectRequest request = PutObjectRequest.builder()
                 .bucket(bucket)
                 .key(prefix + storageKey)
-                .contentType("application/octet-stream")
+                .contentType(format.contentType())
                 .build();
         try {
             // 이미지 내용으로 만든 키이므로 같은 이미지 재전송도 같은 객체에 저장됩니다.
