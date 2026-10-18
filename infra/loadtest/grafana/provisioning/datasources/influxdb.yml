@@ -1,0 +1,13 @@
+apiVersion: 1
+datasources:
+  - name: Receipt loadtest
+    uid: receipt-loadtest-influx
+    type: influxdb
+    access: proxy
+    url: http://influxdb:8086
+    database: receipt_loadtest
+    isDefault: true
+    editable: false
+    jsonData:
+      version: InfluxQL
+      httpMode: POST

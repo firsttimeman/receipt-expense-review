@@ -1,0 +1,123 @@
+# 독립 프로젝트 receipt-loadtest에서만 사용합니다. 운영 DB/AWS와 연결하지 않습니다.
+services:
+  app:
+    image: receipt-expense-review:loadtest
+    build:
+      context: ../..
+    mem_limit: 1g
+    ports:
+      - "127.0.0.1:${LOADTEST_PORT:-19880}:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: prod,loadtest
+      DB_URL: jdbc:mysql://mysql:3306/receipt_loadtest?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=utf8
+      DB_USERNAME: receipt_loadtest
+      DB_PASSWORD: local-loadtest-db
+      REDIS_HOST: redis
+      SESSION_COOKIE_SECURE: "false"
+      SESSION_REDIS_NAMESPACE: receipt:loadtest:session
+      RECEIPT_EXTRACTOR_PROVIDER: fake
+      RECEIPT_FAKE_DELAY: ${LOADTEST_DELAY:-2s}
+      RECEIPT_WORKER_CONCURRENCY: ${LOADTEST_CONCURRENCY:-4}
+      RECEIPT_WORKER_BATCH_SIZE: ${LOADTEST_BATCH_SIZE:-4}
+      RECEIPT_S3_BUCKET: receipt-loadtest
+      RECEIPT_S3_REGION: us-east-1
+      RECEIPT_S3_PREFIX: loadtest
+      RECEIPT_S3_ENDPOINT: http://s3mock:9090
+      RECEIPT_S3_PATH_STYLE_ACCESS: "true"
+      AWS_ACCESS_KEY_ID: local-loadtest
+      AWS_SECRET_ACCESS_KEY: local-loadtest-secret
+      AWS_EC2_METADATA_DISABLED: "true"
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=70.0 -XX:+ExitOnOutOfMemoryError
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      s3mock:
+        condition: service_started
+    stop_grace_period: 40s
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: receipt_loadtest
+      MYSQL_USER: receipt_loadtest
+      MYSQL_PASSWORD: local-loadtest-db
+      MYSQL_ROOT_PASSWORD: local-loadtest-root
+      TZ: Asia/Seoul
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql -h 127.0.0.1 -u \"$$MYSQL_USER\" -D \"$$MYSQL_DATABASE\" -e 'SELECT 1' >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+  redis:
+    image: redis:7.2-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - redis-data:/data
+
+  s3mock:
+    image: adobe/s3mock:5.2.3
+    environment:
+      COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: receipt-loadtest
+      COM_ADOBE_TESTING_S3MOCK_STORE_ROOT: /s3mockroot
+      COM_ADOBE_TESTING_S3MOCK_STORE_RETAIN_FILES_ON_EXIT: "true"
+    volumes:
+      - s3-data:/s3mockroot
+
+  influxdb:
+    image: influxdb:1.8.10
+    ports:
+      - "127.0.0.1:${LOADTEST_INFLUX_PORT:-18086}:8086"
+    environment:
+      INFLUXDB_DB: receipt_loadtest
+      INFLUXDB_HTTP_LOG_ENABLED: "false"
+      INFLUXDB_REPORTING_DISABLED: "true"
+    healthcheck:
+      test: ["CMD", "influx", "-execute", "SHOW DATABASES"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - influx-data:/var/lib/influxdb
+
+  grafana:
+    image: grafana/grafana:12.3.0
+    ports:
+      - "127.0.0.1:${LOADTEST_GRAFANA_PORT:-13000}:3000"
+    env_file:
+      - ../../load/generated/grafana.env
+    environment:
+      # 로컬 합성 데이터의 대시보드만 로그인 없이 읽을 수 있습니다.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+volumes:
+  mysql-data:
+  redis-data:
+  s3-data:
+  influx-data:
+  grafana-data:

@@ -1,0 +1,1242 @@
+{
+  "uid": "receipt-loadtest",
+  "title": "영수증 로컬 부하테스트",
+  "description": "합성 PNG → S3Mock → DB 작업 큐 → 지연 Fake 추출. run_id로 실행을 구분합니다. 실제 AWS/OpenAI 성능 측정이 아닙니다. 지연·동시 처리 수는 각 실행 environment.json에 기록됩니다.",
+  "tags": [
+    "receipt",
+    "loadtest"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 3,
+  "editable": false,
+  "refresh": "5s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "run_id",
+        "label": "실행 ID",
+        "type": "query",
+        "datasource": {
+          "type": "influxdb",
+          "uid": "receipt-loadtest-influx"
+        },
+        "query": "SHOW TAG VALUES FROM \"receipt_submissions\" WITH KEY = \"run_id\"",
+        "refresh": 1,
+        "sort": 2,
+        "multi": false,
+        "includeAll": false,
+        "options": [],
+        "current": {
+          "text": "",
+          "value": ""
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "신규 제출",
+      "description": "",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT sum(\"value\") FROM \"receipt_submissions\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter",
+          "resultFormat": "time_series",
+          "alias": "신규 제출"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "접수 완료",
+      "description": "",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT sum(\"value\") FROM \"receipt_accepted\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter",
+          "resultFormat": "time_series",
+          "alias": "접수 완료"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "추출 성공",
+      "description": "기대 추출값과 소유자 확인까지 통과한 건수입니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT sum(\"value\") FROM \"receipt_completed\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter",
+          "resultFormat": "time_series",
+          "alias": "추출 성공"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "실패 · 시간 초과",
+      "description": "접수 실패 + 완료 조회/추출 실패 + 완료 시간 초과. 실행 종료 후 표시합니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT last(\"unsuccessful\") FROM \"receipt_run_summary\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter",
+          "resultFormat": "time_series",
+          "alias": "실패 · 시간 초과"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "접수 p95",
+      "description": "k6 summary.json의 전체 실행 p95. 실행 종료 후 표시합니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT last(\"upload_p95_ms\") FROM \"receipt_run_summary\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter",
+          "resultFormat": "time_series",
+          "alias": "접수 p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "완료 p95",
+      "description": "제출부터 결과 확인까지의 시간. 성공 건만 집계하며 1초 폴링 지연을 포함합니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT last(\"completion_p95_ms\") FROM \"receipt_run_summary\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter",
+          "resultFormat": "time_series",
+          "alias": "완료 p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "접수 응답 시간 (10초 구간 p95 · p99)",
+      "description": "각 10초 구간의 원시 측정값에서 InfluxDB PERCENTILE로 계산합니다. 전체 실행 p95와 범위·계산 방식이 다릅니다. 표본이 적으면 p95/p99는 최댓값과 같아질 수 있습니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT percentile(\"value\", 95) FROM \"receipt_upload_ms\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(10s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "p95"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT percentile(\"value\", 99) FROM \"receipt_upload_ms\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(10s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "always",
+            "spanNulls": false
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "제출 → 완료 확인 시간 (10초 구간 p95 · p99)",
+      "description": "각 10초 구간의 원시 측정값에서 InfluxDB PERCENTILE로 계산합니다. 전체 실행 p95와 범위·계산 방식이 다릅니다. 표본이 적으면 p95/p99는 최댓값과 같아질 수 있습니다. 성공 건만 집계하며 2초 추출 지연, 작업 대기와 완료 조회 간격을 포함합니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT percentile(\"value\", 95) FROM \"receipt_completion_ms\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(10s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "p95"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT percentile(\"value\", 99) FROM \"receipt_completion_ms\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(10s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "always",
+            "spanNulls": false
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "대기 · 처리 중 작업 (약 2초마다 관측)",
+      "description": "짧은 상태 변화는 샘플 사이에 발생할 수 있습니다. 최고값은 관측된 최고값입니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT last(\"queued\") FROM \"receipt_job_queue\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(2s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "대기"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT last(\"processing\") FROM \"receipt_job_queue\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(2s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "처리 중"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT last(\"retry_wait\") FROM \"receipt_job_queue\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(2s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "재시도 대기"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "always",
+            "spanNulls": false
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "제출 · 완료 처리량 (5초 구간)",
+      "description": "구간 경계 때문에 목표 0.5건/초가 0.4와 0.6으로 표시될 수 있습니다. 전체 HTTP RPS가 아닙니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT sum(\"value\") / 5 FROM \"receipt_submissions\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(5s) fill(0)",
+          "resultFormat": "time_series",
+          "alias": "제출 건/초"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT sum(\"value\") / 5 FROM \"receipt_completed\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(5s) fill(0)",
+          "resultFormat": "time_series",
+          "alias": "완료 건/초"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "always",
+            "spanNulls": false
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "DB 완료 · 실패 · 미완료 작업",
+      "description": "Job COMPLETED는 API 응답 데이터 검증을 포함하지 않습니다. 위 추출 성공 건수와 함께 확인합니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT last(\"completed\") FROM \"receipt_job_queue\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(2s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "완료"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT last(\"failed\") FROM \"receipt_job_queue\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(2s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "실패"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT last(\"unfinished\") FROM \"receipt_job_queue\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(2s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "미완료"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "always",
+            "spanNulls": false
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "접수 실패 · 추출/조회 실패 · 시간 초과",
+      "description": "",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT sum(\"value\") FROM \"receipt_not_accepted\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(5s) fill(0)",
+          "resultFormat": "time_series",
+          "alias": "접수 실패"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT sum(\"value\") FROM \"receipt_failed\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(5s) fill(0)",
+          "resultFormat": "time_series",
+          "alias": "추출/조회 실패"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT sum(\"value\") FROM \"receipt_completion_timeouts\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(5s) fill(0)",
+          "resultFormat": "time_series",
+          "alias": "완료 시간 초과"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "always",
+            "spanNulls": false
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "완료 조회 HTTP 응답 시간 (10초 구간 p95 · p99)",
+      "description": "각 10초 구간의 원시 측정값에서 InfluxDB PERCENTILE로 계산합니다. 전체 실행 p95와 범위·계산 방식이 다릅니다. 표본이 적으면 p95/p99는 최댓값과 같아질 수 있습니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT percentile(\"value\", 95) FROM \"http_req_duration\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter AND \"name\" = 'poll_detail' GROUP BY time(10s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "p95"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT percentile(\"value\", 99) FROM \"http_req_duration\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter AND \"name\" = 'poll_detail' GROUP BY time(10s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "always",
+            "spanNulls": false
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "백분위 계산 표본 수 (10초 구간)",
+      "description": "지연 그래프의 각 구간에서 p95/p99 계산에 사용된 표본 수입니다. 현재 1건/초에서는 구간당 약 10건으로, 고백분위 해석에 유의합니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT count(\"value\") FROM \"receipt_upload_ms\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(10s) fill(0)",
+          "resultFormat": "time_series",
+          "alias": "접수 표본"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT count(\"value\") FROM \"receipt_completion_ms\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(10s) fill(0)",
+          "resultFormat": "time_series",
+          "alias": "완료 표본"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "always",
+            "spanNulls": false
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "컨테이너 CPU 사용률",
+      "description": "Docker stats 표본. CPU 100%는 논리 CPU 한 개 수준이며 100%를 넘을 수 있습니다. 메모리는 Docker CLI의 캐시 제외 사용량입니다. 자원 측정을 켠 실행에만 표시됩니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT mean(\"cpu_percent\") FROM \"receipt_resources\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(2s), \"service\" fill(null)",
+          "resultFormat": "time_series",
+          "alias": "$tag_service"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "always",
+            "spanNulls": false
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "컨테이너 메모리 사용량",
+      "description": "Docker stats 표본. CPU 100%는 논리 CPU 한 개 수준이며 100%를 넘을 수 있습니다. 메모리는 Docker CLI의 캐시 제외 사용량입니다. 자원 측정을 켠 실행에만 표시됩니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 36,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT mean(\"memory_bytes\") FROM \"receipt_resources\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(2s), \"service\" fill(null)",
+          "resultFormat": "time_series",
+          "alias": "$tag_service"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "always",
+            "spanNulls": false
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "앱의 MySQL 연결 — 전체 / SQL 실행 중",
+      "description": "앱 컨테이너 IP의 MySQL 연결만 집계합니다. SQL 실행 중 수는 Hikari가 빌려준 연결 수와 다릅니다. 짧은 쿼리는 2초 표본 사이에 실행될 수 있습니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 44,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT max(\"app_connections\") FROM \"receipt_db_connections\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(2s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "열린 연결"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT max(\"app_query_active\") FROM \"receipt_db_connections\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(2s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "SQL 실행 중"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT max(\"app_sleeping\") FROM \"receipt_db_connections\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(2s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "Sleep"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "always",
+            "spanNulls": false
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "MySQL 전체 연결 / 실행 중 / 한도",
+      "description": "관측용 연결과 MySQL 내부 스레드가 포함될 수 있습니다. 앱 연결 패널과 구분해서 봅니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 44,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT max(\"server_connected\") FROM \"receipt_db_connections\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(2s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "서버 연결"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT max(\"server_running\") FROM \"receipt_db_connections\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(2s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "서버 실행 중"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT max(\"max_connections\") FROM \"receipt_db_connections\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(2s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "연결 한도"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "always",
+            "spanNulls": false
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    }
+  ]
+}

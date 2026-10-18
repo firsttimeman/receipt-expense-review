@@ -27,6 +27,7 @@ public class ReceiptProperties {
     @Setter
     public static class Extractor {
         private String provider = "fake";
+        private Duration fakeDelay = Duration.ZERO;
 
         public Extractor() {
         }

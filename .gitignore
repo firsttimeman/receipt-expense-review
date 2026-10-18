@@ -14,3 +14,6 @@ secrets/
 *.key
 *.pem
 src/main/resources/application-local.yml
+load/generated/
+load/results/
+load/__pycache__/

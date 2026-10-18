@@ -1,0 +1,9 @@
+# 부하테스트에서만 활성화합니다. OpenAI를 호출하지 않고 일정한 응답 대기를 재현합니다.
+receipt:
+  extractor:
+    provider: fake
+    fake-delay: ${RECEIPT_FAKE_DELAY:2s}
+
+logging:
+  level:
+    com.example.receipt.domain.extraction.extractor.FakeReceiptExtractor: DEBUG

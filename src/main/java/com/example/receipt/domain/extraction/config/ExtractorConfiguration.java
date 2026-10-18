@@ -13,7 +13,7 @@ public class ExtractorConfiguration {
     @Bean
     ReceiptExtractor receiptExtractor(ReceiptProperties properties, ObjectMapper objectMapper) {
         return switch (properties.getExtractor().getProvider().toLowerCase()) {
-            case "fake" -> new FakeReceiptExtractor();
+            case "fake" -> new FakeReceiptExtractor(properties.getExtractor().getFakeDelay());
             case "openai" -> new OpenAiReceiptExtractor(properties.getOpenai(), objectMapper);
             default -> throw new IllegalArgumentException(
                     "지원하지 않는 추출 공급자입니다: " + properties.getExtractor().getProvider());

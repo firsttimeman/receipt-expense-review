@@ -1,0 +1,295 @@
+{
+  "uid": "receipt-worker-comparison",
+  "title": "영수증 Worker 동시 처리 반복 비교",
+  "description": "Fake 지연 2초, 3건/초, 60초를 4·6·8개 각각 3회 반복. 준비 부하 30초는 제외. 개별 상세 그래프는 기존 영수증 부하테스트 대시보드에서 run_id로 조회합니다.",
+  "tags": [
+    "receipt",
+    "loadtest",
+    "comparison"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": true,
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "experiment_id",
+        "label": "실험",
+        "type": "query",
+        "datasource": {
+          "type": "influxdb",
+          "uid": "receipt-loadtest-influx"
+        },
+        "query": "SHOW TAG VALUES FROM \"receipt_worker_repeat_summary\" WITH KEY = \"experiment_id\"",
+        "refresh": 1,
+        "sort": 2,
+        "multi": false,
+        "includeAll": false,
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "bargauge",
+      "title": "완료 p95 — 3회 중앙값",
+      "description": "각 실행의 지표를 먼저 구한 뒤 3회 중앙값으로 비교합니다. 완료 p95 중앙값은 모든 요청을 합쳐 구한 p95와 다릅니다. 자원은 60초 제출 구간 표본입니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT last(\"completion_p95_seconds\") FROM \"receipt_worker_repeat_summary\" WHERE \"experiment_id\" =~ /^$experiment_id$/ AND $timeFilter GROUP BY \"concurrency\"",
+          "resultFormat": "time_series",
+          "alias": "동시 처리 $tag_concurrency개"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "bargauge",
+      "title": "앱 CPU 표본 평균 — 3회 중앙값",
+      "description": "각 실행의 지표를 먼저 구한 뒤 3회 중앙값으로 비교합니다. 완료 p95 중앙값은 모든 요청을 합쳐 구한 p95와 다릅니다. 자원은 60초 제출 구간 표본입니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT last(\"app_cpu_mean_percent\") FROM \"receipt_worker_repeat_summary\" WHERE \"experiment_id\" =~ /^$experiment_id$/ AND $timeFilter GROUP BY \"concurrency\"",
+          "resultFormat": "time_series",
+          "alias": "동시 처리 $tag_concurrency개"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "bargauge",
+      "title": "앱 메모리 관측 최대 — 3회 중앙값",
+      "description": "각 실행의 지표를 먼저 구한 뒤 3회 중앙값으로 비교합니다. 완료 p95 중앙값은 모든 요청을 합쳐 구한 p95와 다릅니다. 자원은 60초 제출 구간 표본입니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT last(\"app_memory_peak_bytes\") FROM \"receipt_worker_repeat_summary\" WHERE \"experiment_id\" =~ /^$experiment_id$/ AND $timeFilter GROUP BY \"concurrency\"",
+          "resultFormat": "time_series",
+          "alias": "동시 처리 $tag_concurrency개"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "bargauge",
+      "title": "대기열 관측 최대 — 3회 중앙값",
+      "description": "각 실행의 지표를 먼저 구한 뒤 3회 중앙값으로 비교합니다. 완료 p95 중앙값은 모든 요청을 합쳐 구한 p95와 다릅니다. 자원은 60초 제출 구간 표본입니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT last(\"queue_peak\") FROM \"receipt_worker_repeat_summary\" WHERE \"experiment_id\" =~ /^$experiment_id$/ AND $timeFilter GROUP BY \"concurrency\"",
+          "resultFormat": "time_series",
+          "alias": "동시 처리 $tag_concurrency개"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "반복별 측정값 — 제출 구간 60초",
+      "description": "CPU는 Docker 기준 100%가 논리 CPU 한 개 수준입니다. 메모리는 파일 캐시 제외 표본 최대값입니다. SQL 실행 중 수는 Hikari 사용 중 연결 수와 다릅니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 24,
+        "h": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT \"concurrency\" AS \"동시 처리\", \"round\" AS \"반복\", \"completion_p95_seconds\" AS \"완료 p95\", \"completion_p99_seconds\" AS \"완료 p99\", \"queue_peak\" AS \"최대 대기\", \"app_cpu_mean_percent\" AS \"앱 평균 CPU\", \"app_memory_peak_mib\" AS \"앱 최대 MiB\", \"mysql_cpu_mean_percent\" AS \"DB 평균 CPU\", \"db_connections_max\" AS \"앱 DB 연결 최대\", \"db_query_active_max\" AS \"SQL 실행 중 최대\" FROM \"receipt_worker_repeat_detail\" WHERE \"experiment_id\" =~ /^$experiment_id$/ AND $timeFilter",
+          "resultFormat": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2,
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "동시 처리",
+            "desc": false
+          }
+        ]
+      }
+    }
+  ]
+}

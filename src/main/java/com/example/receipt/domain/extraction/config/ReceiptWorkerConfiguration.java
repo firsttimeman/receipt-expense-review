@@ -48,6 +48,10 @@ public class ReceiptWorkerConfiguration {
      */
     private void validateTimeoutAndLease(ReceiptWorkerProperties workerProperties,
                                          ReceiptProperties receiptProperties) {
+        if ("fake".equalsIgnoreCase(receiptProperties.getExtractor().getProvider())
+                && workerProperties.getLeaseDuration().compareTo(receiptProperties.getExtractor().getFakeDelay()) <= 0) {
+            throw new IllegalArgumentException("Worker Lease 기간은 Fake 추출 지연보다 길어야 합니다.");
+        }
         if (!"openai".equalsIgnoreCase(receiptProperties.getExtractor().getProvider())) return;
         if (workerProperties.getLeaseDuration()
                 .compareTo(receiptProperties.getOpenai().getResponseTimeout()) <= 0) {

@@ -1,0 +1,410 @@
+{
+  "uid": "receipt-duplicates",
+  "title": "영수증 동일 이미지 동시 제출 검증",
+  "description": "10·50개 동시 제출, 같은 키/다른 키/키 없음/다른 직원. 실제 MySQL+Redis, Fake 2초, Worker 4개, 로컬 S3Mock.",
+  "tags": [
+    "receipt",
+    "loadtest",
+    "duplicates"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": true,
+  "refresh": "5s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "experiment_id",
+        "label": "실험",
+        "type": "query",
+        "datasource": {
+          "type": "influxdb",
+          "uid": "receipt-loadtest-influx"
+        },
+        "query": "SHOW TAG VALUES FROM \"receipt_duplicate_http\" WITH KEY = \"experiment_id\"",
+        "refresh": 1,
+        "sort": 2,
+        "multi": false,
+        "includeAll": false,
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "전체 제출 요청",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT sum(\"requests\") FROM \"receipt_duplicate_http\" WHERE \"experiment_id\" =~ /^$experiment_id$/ AND $timeFilter",
+          "resultFormat": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "신규 접수 202",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT sum(\"created\") FROM \"receipt_duplicate_http\" WHERE \"experiment_id\" =~ /^$experiment_id$/ AND $timeFilter",
+          "resultFormat": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "실제 Fake 추출 호출",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT sum(\"extraction_calls\") FROM \"receipt_duplicate_validation\" WHERE \"experiment_id\" =~ /^$experiment_id$/ AND $timeFilter",
+          "resultFormat": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "검증 통과 시험",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT sum(\"passed\") FROM \"receipt_duplicate_validation\" WHERE \"experiment_id\" =~ /^$experiment_id$/ AND $timeFilter",
+          "resultFormat": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "최초 동시 제출 — 업로드 p95",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 9
+      },
+      "description": "원시 요청 시간의 5초 구간별 p95입니다. 빈 구간은 연결하지 않습니다. 시험별 전체 p95는 아래 표의 k6 값을 확인하세요. 제출 응답까지의 시간이며 추출 완료 시간과 다릅니다.",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT percentile(\"value\",95) FROM \"duplicate_upload_ms\" WHERE \"experiment_id\" =~ /^$experiment_id$/ AND $timeFilter AND \"phase\"='initial' GROUP BY time(5s),\"mode\",\"burst_vus\" fill(null)",
+          "resultFormat": "time_series",
+          "alias": "$tag_mode / $tag_burst_vus VUs"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "always",
+            "pointSize": 6,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "완료 후 동시 재전송 — 업로드 p95",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 9
+      },
+      "description": "원시 요청 시간의 5초 구간별 p95입니다. 빈 구간은 연결하지 않습니다. 시험별 전체 p95는 아래 표의 k6 값을 확인하세요. 제출 응답까지의 시간이며 추출 완료 시간과 다릅니다.",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT percentile(\"value\",95) FROM \"duplicate_upload_ms\" WHERE \"experiment_id\" =~ /^$experiment_id$/ AND $timeFilter AND \"phase\"='after-completion' GROUP BY time(5s),\"mode\",\"burst_vus\" fill(null)",
+          "resultFormat": "time_series",
+          "alias": "$tag_mode / $tag_burst_vus VUs"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "always",
+            "pointSize": 6,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "시험별 요청 결과·전체 p95 (k6)",
+      "description": "initial=신규 이미지의 동시 제출, after-completion=동일 이미지 처리 완료 후 재전송. cross-owner의 409는 다른 직원 차단을 뜻합니다. start_spread_ms는 클라이언트 요청 시작 시각의 분산입니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 24,
+        "h": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT \"run_id\",\"mode\",\"burst_vus\",\"round\",\"phase\",\"requests\",\"created\",\"reused\",\"owner_conflicts\",\"p95_ms\",\"p99_ms\",\"start_spread_ms\",\"k6_exit_code\" FROM \"receipt_duplicate_http\" WHERE \"experiment_id\" =~ /^$experiment_id$/ AND $timeFilter",
+          "resultFormat": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "DB·추출 호출·재전송 불변 검증",
+      "description": "각 시험은 새로운 이미지 1장입니다. 기대값은 Receipt 1 / Job 1 / 추출 호출 1 / attempt 1 / replay_unchanged 1 / passed 1. same-key는 중복 이벤트 0, 나머지는 1입니다. 단일 앱·Fake/S3Mock 결과이며 장애 시 exactly-once 보장은 아닙니다.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 25,
+        "w": 24,
+        "h": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT \"run_id\",\"mode\",\"burst_vus\",\"round\",\"receipts\",\"jobs\",\"extraction_calls\",\"attempts\",\"duplicate_events\",\"replay_unchanged\",\"passed\" FROM \"receipt_duplicate_validation\" WHERE \"experiment_id\" =~ /^$experiment_id$/ AND $timeFilter",
+          "resultFormat": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    }
+  ]
+}
