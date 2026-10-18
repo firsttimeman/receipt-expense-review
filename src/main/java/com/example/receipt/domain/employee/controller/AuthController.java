@@ -24,9 +24,7 @@ import java.util.Map;
 @ConditionalOnWebApplication
 public class AuthController {
     private final EmployeeService service;
-
     private final CurrentEmployeeService currentEmployeeService;
-
     private final LoginService loginService;
 
     @GetMapping("/csrf")

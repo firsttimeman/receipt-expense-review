@@ -39,7 +39,12 @@ public class EmployeeSessionValidationFilter extends OncePerRequestFilter {
         }
 
         refreshAuthorities(employee);
-        filterChain.doFilter(request, response);
+        EmployeeRequestContext.store(request, employee);
+        try {
+            filterChain.doFilter(request, response);
+        } finally {
+            EmployeeRequestContext.clear(request);
+        }
     }
 
     private void rejectAuthentication(HttpServletRequest request, HttpServletResponse response) {

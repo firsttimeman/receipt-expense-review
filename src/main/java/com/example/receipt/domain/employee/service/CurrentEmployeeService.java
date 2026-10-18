@@ -3,6 +3,7 @@ package com.example.receipt.domain.employee.service;
 import com.example.receipt.domain.employee.entity.Employee;
 import com.example.receipt.domain.employee.repository.EmployeeRepository;
 import com.example.receipt.domain.employee.security.EmployeePrincipal;
+import com.example.receipt.domain.employee.security.EmployeeRequestContext;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.authentication.InsufficientAuthenticationException;
 import org.springframework.security.core.Authentication;
@@ -24,8 +25,12 @@ public class CurrentEmployeeService {
             throw new InsufficientAuthenticationException("로그인이 필요합니다.");
         }
 
-        Employee employee = employeeRepository.findByLoginId(authentication.getName())
-                .orElseThrow(() -> new InsufficientAuthenticationException("로그인이 필요합니다."));
+        Employee employee = EmployeeRequestContext.getEmployee();
+        if (employee == null) {
+            // HTTP 요청 밖에서 서비스를 직접 호출할 때는 DB에서 확인합니다.
+            employee = employeeRepository.findByLoginId(authentication.getName())
+                    .orElseThrow(() -> new InsufficientAuthenticationException("로그인이 필요합니다."));
+        }
 
         // 비활성화된 계정이나 폐기된 세션으로 업무를 처리할 수 없도록 확인합니다.
         if (!principal.isValidFor(employee)) {
