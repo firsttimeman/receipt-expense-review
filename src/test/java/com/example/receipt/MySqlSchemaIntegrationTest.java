@@ -24,6 +24,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.annotation.DirtiesContext;
 import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -42,10 +43,12 @@ import java.util.concurrent.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
 
 @SpringBootTest
 @ActiveProfiles("test")
 @Testcontainers(disabledWithoutDocker = true)
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class MySqlSchemaIntegrationTest {
     @Container
     static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.4")
@@ -133,9 +136,13 @@ class MySqlSchemaIntegrationTest {
             });
             start.countDown();
 
-            List<ClaimedReceiptJob> claimed = new java.util.ArrayList<>();
-            claimed.addAll(workerA.get(10, TimeUnit.SECONDS));
-            claimed.addAll(workerB.get(10, TimeUnit.SECONDS));
+            List<ClaimedReceiptJob> claimedByA = workerA.get(10, TimeUnit.SECONDS);
+            List<ClaimedReceiptJob> claimedByB = workerB.get(10, TimeUnit.SECONDS);
+            assertThat(claimedByA).hasSize(3);
+            assertThat(claimedByB).hasSize(3);
+
+            List<ClaimedReceiptJob> claimed = new java.util.ArrayList<>(claimedByA);
+            claimed.addAll(claimedByB);
 
             assertThat(claimed).hasSize(6);
             assertThat(claimed).extracting(ClaimedReceiptJob::jobId).doesNotHaveDuplicates();
@@ -148,15 +155,21 @@ class MySqlSchemaIntegrationTest {
     }
 
     /**
-     * SKIP LOCKED는 다른 트랜잭션이 잠근 행을 기다리지 않으므로 한 번의 조회가 batchSize보다
-     * 적게 반환될 수 있다. 운영 Worker처럼 짧은 polling을 반복해 남은 작업을 가져온다.
+     * SKIP LOCKED는 공평한 분배를 보장하지 않으며 잠긴 행을 건너뛰면 빈 결과도 반환할 수 있다.
+     * 운영 Worker처럼 먼저 확보한 작업도 용량에 포함하고, 남은 자리만 다음 조회에서 채운다.
      */
-    private List<ClaimedReceiptJob> claimAcrossPolls(String workerId, int batchSize) throws Exception {
+    private List<ClaimedReceiptJob> claimAcrossPolls(String workerId, int capacity) {
         List<ClaimedReceiptJob> claimed = new java.util.ArrayList<>();
-        for (int attempt = 0; attempt < 3; attempt++) {
-            claimed.addAll(claimService.claimAvailable(workerId, batchSize, Duration.ofSeconds(30)));
-            TimeUnit.MILLISECONDS.sleep(10);
-        }
+        await().alias(workerId + " 작업 용량 채우기")
+                .pollInSameThread()
+                .atMost(Duration.ofSeconds(5))
+                .pollDelay(Duration.ZERO)
+                .pollInterval(Duration.ofMillis(10))
+                .until(() -> {
+                    int remaining = capacity - claimed.size();
+                    claimed.addAll(claimService.claimAvailable(workerId, remaining, Duration.ofSeconds(30)));
+                    return claimed.size() == capacity;
+                });
         return claimed;
     }
 

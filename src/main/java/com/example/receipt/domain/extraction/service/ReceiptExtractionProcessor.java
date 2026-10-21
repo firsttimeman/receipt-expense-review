@@ -25,6 +25,7 @@ import java.time.Instant;
 @Service
 @RequiredArgsConstructor
 public class ReceiptExtractionProcessor {
+    // 최초 실행을 포함한 전체 시도 횟수입니다. S3 읽기와 AI 추출이 같은 한도를 사용합니다.
     private static final int MAX_ATTEMPTS = 3;
     private static final Duration RETRY_DELAY = Duration.ofSeconds(10);
 
@@ -47,15 +48,24 @@ public class ReceiptExtractionProcessor {
             Instant extractedAt = Instant.now(clock);
             return lifecycleService.completeExtraction(claimedJob, extraction, extractedAt);
         } catch (ExtractionException exception) {
-            if (claimedJob.attemptCount() < MAX_ATTEMPTS) {
-                Instant nextRetryAt = Instant.now(clock).plus(RETRY_DELAY);
-                return lifecycleService.scheduleRetry(claimedJob, exception, nextRetryAt);
-            }
-            return lifecycleService.failExtraction(claimedJob, exception);
+            return retryOrFail(claimedJob, exception);
         } catch (ReceiptImageStorageException exception) {
+            if (exception.isRetryable()) {
+                return retryOrFail(claimedJob, exception);
+            }
             return lifecycleService.failExtraction(claimedJob,
                     exception.getClass().getSimpleName(), exception.getMessage());
         }
+    }
+
+    private Receipt retryOrFail(ClaimedReceiptJob claimedJob, RuntimeException exception) {
+        String errorCode = exception.getClass().getSimpleName();
+        if (claimedJob.attemptCount() < MAX_ATTEMPTS) {
+            // 스레드를 대기시키지 않고, DB에 다음 실행 가능 시각을 기록합니다.
+            Instant nextRetryAt = Instant.now(clock).plus(RETRY_DELAY);
+            return lifecycleService.scheduleRetry(claimedJob, errorCode, exception.getMessage(), nextRetryAt);
+        }
+        return lifecycleService.failExtraction(claimedJob, errorCode, exception.getMessage());
     }
 
 }

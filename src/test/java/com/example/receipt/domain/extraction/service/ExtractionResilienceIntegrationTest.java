@@ -4,19 +4,26 @@ import com.example.receipt.domain.extraction.dto.ClaimedReceiptJob;
 import com.example.receipt.domain.extraction.dto.ExtractionRequest;
 import com.example.receipt.domain.extraction.dto.ExtractionResult;
 import com.example.receipt.domain.extraction.exception.ExtractionException;
+import com.example.receipt.domain.extraction.exception.JobOwnershipLostException;
 import com.example.receipt.domain.extraction.extractor.FakeReceiptExtractor;
 import com.example.receipt.domain.extraction.extractor.ReceiptExtractor;
 import com.example.receipt.domain.extraction.model.ExtractionJobStatus;
 import com.example.receipt.domain.extraction.repository.ReceiptExtractionJobRepository;
 import com.example.receipt.domain.receipt.dto.UploadResult;
+import com.example.receipt.domain.receipt.entity.AuditEvent;
 import com.example.receipt.domain.receipt.model.AuditAction;
 import com.example.receipt.domain.receipt.model.ReceiptStatus;
 import com.example.receipt.domain.receipt.repository.AuditEventRepository;
 import com.example.receipt.domain.receipt.repository.IdempotencyRecordRepository;
 import com.example.receipt.domain.receipt.repository.ReceiptRepository;
 import com.example.receipt.domain.receipt.service.ReceiptUploadService;
+import com.example.receipt.global.storage.ReceiptImageNotFoundException;
+import com.example.receipt.global.storage.ReceiptImageStorage;
+import com.example.receipt.global.storage.ReceiptImageStorageException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -24,6 +31,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.GenericContainer;
@@ -36,17 +44,23 @@ import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Queue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @SpringBootTest(properties = "receipt.worker.enabled=false")
 @ActiveProfiles("test")
 @Testcontainers
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @Import(ExtractionResilienceIntegrationTest.ExtractorTestConfiguration.class)
 class ExtractionResilienceIntegrationTest {
     @Container
@@ -62,12 +76,14 @@ class ExtractionResilienceIntegrationTest {
 
     @Autowired ReceiptUploadService uploadService;
     @Autowired ReceiptJobClaimService claimService;
+    @Autowired ExpiredJobRecoveryService recoveryService;
     @Autowired ReceiptExtractionProcessor processor;
     @Autowired ReceiptRepository receiptRepository;
     @Autowired ReceiptExtractionJobRepository jobRepository;
     @Autowired AuditEventRepository auditRepository;
     @Autowired IdempotencyRecordRepository idempotencyRepository;
     @Autowired ScriptedReceiptExtractor extractor;
+    @Autowired ScriptedImageStorage imageStorage;
     @Autowired MutableClock mutableClock;
 
     @BeforeEach
@@ -77,6 +93,7 @@ class ExtractionResilienceIntegrationTest {
         jobRepository.deleteAll();
         receiptRepository.deleteAll();
         extractor.reset();
+        imageStorage.reset();
         mutableClock.reset();
     }
 
@@ -120,6 +137,177 @@ class ExtractionResilienceIntegrationTest {
         assertThat(actions(uploaded)).contains(AuditAction.EXTRACTION_FAILED);
     }
 
+    @Test
+    void temporaryImageReadFailureWaitsTenSecondsThenCompletesTheSameJob() throws Exception {
+        imageStorage.failNext(temporaryStorageFailure());
+        UploadResult uploaded = upload("temporary-storage.png", Color.WHITE);
+        ClaimedReceiptJob firstClaim = claimNext();
+        // 실패를 처리한 시점부터 10초를 기다리는지 확인합니다.
+        mutableClock.advance(Duration.ofSeconds(1));
+        Instant failureTime = mutableClock.instant();
+
+        processor.process(firstClaim);
+
+        var waitingJob = job(uploaded);
+        assertThat(waitingJob.id()).isEqualTo(firstClaim.jobId());
+        assertThat(waitingJob.status()).isEqualTo(ExtractionJobStatus.RETRY_WAIT);
+        assertThat(waitingJob.attemptCount()).isEqualTo(1);
+        assertThat(waitingJob.availableAt()).isEqualTo(failureTime.plusSeconds(10));
+        assertThat(waitingJob.lockedBy()).isNull();
+        assertThat(waitingJob.claimToken()).isNull();
+        assertThat(waitingJob.leaseUntil()).isNull();
+        assertThat(receiptRepository.findById(uploaded.receipt().id()).orElseThrow().status()).isNull();
+        assertThat(imageStorage.loadCount()).isEqualTo(1);
+        assertThat(extractor.invocationCount()).isZero();
+        assertThat(events(uploaded, AuditAction.EXTRACTION_RETRY_SCHEDULED)).singleElement()
+                .satisfies(event -> {
+                    assertThat(event.details().get("errorCode")).isEqualTo("ReceiptImageStorageException");
+                    assertThat(((Number) event.details().get("attemptCount")).intValue()).isEqualTo(1);
+                    assertThat(((Number) event.details().get("delayMillis")).longValue()).isEqualTo(10_000);
+                    assertThat(event.details().get("nextAvailableAt")).isEqualTo(failureTime.plusSeconds(10).toString());
+                });
+
+        mutableClock.advance(Duration.ofSeconds(9));
+        assertThat(claimService.claimAvailable(WORKER_ID, 1, Duration.ofSeconds(2))).isEmpty();
+        assertThat(job(uploaded).attemptCount()).isEqualTo(1);
+
+        mutableClock.advance(Duration.ofSeconds(1));
+        ClaimedReceiptJob secondClaim = claimNext();
+        assertThat(secondClaim.jobId()).isEqualTo(firstClaim.jobId());
+        assertThat(secondClaim.claimToken()).isNotEqualTo(firstClaim.claimToken());
+        processor.process(secondClaim);
+
+        assertThat(job(uploaded).status()).isEqualTo(ExtractionJobStatus.COMPLETED);
+        assertThat(job(uploaded).attemptCount()).isEqualTo(2);
+        assertThat(receiptRepository.findById(uploaded.receipt().id()).orElseThrow().status())
+                .isEqualTo(ReceiptStatus.AUTO_APPROVED);
+        assertThat(imageStorage.loadCount()).isEqualTo(2);
+        assertThat(extractor.invocationCount()).isEqualTo(1);
+        assertThat(events(uploaded, AuditAction.EXTRACTION_FAILED)).isEmpty();
+    }
+
+    @Test
+    void temporaryImageReadFailuresStopAfterThreeTotalAttempts() throws Exception {
+        imageStorage.failNext(temporaryStorageFailure(), temporaryStorageFailure(), temporaryStorageFailure());
+        UploadResult uploaded = upload("storage-exhausted.png", Color.GRAY);
+
+        processor.process(claimNext());
+        assertThat(job(uploaded).status()).isEqualTo(ExtractionJobStatus.RETRY_WAIT);
+        mutableClock.advance(Duration.ofSeconds(10));
+        processor.process(claimNext());
+        assertThat(job(uploaded).status()).isEqualTo(ExtractionJobStatus.RETRY_WAIT);
+        mutableClock.advance(Duration.ofSeconds(10));
+        processor.process(claimNext());
+
+        assertThat(job(uploaded).status()).isEqualTo(ExtractionJobStatus.FAILED);
+        assertThat(job(uploaded).attemptCount()).isEqualTo(3);
+        assertThat(job(uploaded).lockedBy()).isNull();
+        assertThat(job(uploaded).claimToken()).isNull();
+        assertThat(job(uploaded).leaseUntil()).isNull();
+        assertThat(job(uploaded).lastErrorCode()).isEqualTo("ReceiptImageStorageException");
+        assertThat(receiptRepository.findById(uploaded.receipt().id()).orElseThrow().status())
+                .isEqualTo(ReceiptStatus.MANUAL_ENTRY);
+        assertThat(events(uploaded, AuditAction.EXTRACTION_RETRY_SCHEDULED)).hasSize(2);
+        assertThat(events(uploaded, AuditAction.EXTRACTION_FAILED)).singleElement()
+                .satisfies(event -> {
+                    assertThat(event.details().get("errorCode")).isEqualTo("ReceiptImageStorageException");
+                    assertThat(((Number) event.details().get("attemptCount")).intValue()).isEqualTo(3);
+                });
+        assertThat(imageStorage.loadCount()).isEqualTo(3);
+        assertThat(extractor.invocationCount()).isZero();
+
+        mutableClock.advance(Duration.ofMinutes(5));
+        recoveryService.recoverExpired(10);
+        assertThat(claimService.claimAvailable(WORKER_ID, 1, Duration.ofSeconds(2))).isEmpty();
+        assertThat(imageStorage.loadCount()).isEqualTo(3);
+    }
+
+    @ParameterizedTest
+    @MethodSource("permanentStorageFailures")
+    void missingOrForbiddenImageFailsOnTheFirstAttempt(ReceiptImageStorageException failure) throws Exception {
+        imageStorage.failNext(failure);
+        UploadResult uploaded = upload("unavailable-image.png", Color.WHITE);
+
+        processor.process(claimNext());
+
+        assertThat(job(uploaded).status()).isEqualTo(ExtractionJobStatus.FAILED);
+        assertThat(job(uploaded).attemptCount()).isEqualTo(1);
+        assertThat(job(uploaded).lastErrorCode()).isEqualTo(failure.getClass().getSimpleName());
+        assertThat(receiptRepository.findById(uploaded.receipt().id()).orElseThrow().status())
+                .isEqualTo(ReceiptStatus.MANUAL_ENTRY);
+        assertThat(imageStorage.loadCount()).isEqualTo(1);
+        assertThat(extractor.invocationCount()).isZero();
+        assertThat(events(uploaded, AuditAction.EXTRACTION_RETRY_SCHEDULED)).isEmpty();
+        assertThat(events(uploaded, AuditAction.EXTRACTION_FAILED)).hasSize(1);
+
+        mutableClock.advance(Duration.ofMinutes(5));
+        assertThat(claimService.claimAvailable(WORKER_ID, 1, Duration.ofSeconds(2))).isEmpty();
+    }
+
+    static Stream<ReceiptImageStorageException> permanentStorageFailures() {
+        return Stream.of(
+                new ReceiptImageNotFoundException(null),
+                new ReceiptImageStorageException("S3 이미지 접근 권한이 없습니다.", null, false));
+    }
+
+    @Test
+    void imageReadAndAiFailuresShareTheSameThreeAttemptLimit() throws Exception {
+        UploadResult uploaded = upload("mixed-failures.png", Color.GRAY);
+        imageStorage.failNext(temporaryStorageFailure());
+        processor.process(claimNext());
+
+        mutableClock.advance(Duration.ofSeconds(10));
+        extractor.failNext(failure());
+        processor.process(claimNext());
+        assertThat(job(uploaded).status()).isEqualTo(ExtractionJobStatus.RETRY_WAIT);
+        assertThat(job(uploaded).lastErrorCode()).isEqualTo("ExtractionException");
+
+        mutableClock.advance(Duration.ofSeconds(10));
+        imageStorage.failNext(temporaryStorageFailure());
+        processor.process(claimNext());
+
+        assertThat(job(uploaded).status()).isEqualTo(ExtractionJobStatus.FAILED);
+        assertThat(job(uploaded).attemptCount()).isEqualTo(3);
+        assertThat(receiptRepository.findById(uploaded.receipt().id()).orElseThrow().status())
+                .isEqualTo(ReceiptStatus.MANUAL_ENTRY);
+        assertThat(imageStorage.loadCount()).isEqualTo(3);
+        assertThat(extractor.invocationCount()).isEqualTo(1);
+        assertThat(events(uploaded, AuditAction.EXTRACTION_RETRY_SCHEDULED))
+                .extracting(event -> event.details().get("errorCode"))
+                .containsExactly("ReceiptImageStorageException", "ExtractionException");
+        assertThat(events(uploaded, AuditAction.EXTRACTION_FAILED)).hasSize(1);
+        mutableClock.advance(Duration.ofSeconds(10));
+        assertThat(claimService.claimAvailable(WORKER_ID, 1, Duration.ofSeconds(2))).isEmpty();
+    }
+
+    @Test
+    void oldWorkerCannotScheduleStorageRetryAfterAnotherWorkerClaimsTheJob() throws Exception {
+        UploadResult uploaded = upload("old-worker.png", Color.WHITE);
+        ClaimedReceiptJob oldClaim = claimNext();
+        mutableClock.advance(Duration.ofSeconds(3));
+        recoveryService.recoverExpired(1);
+        ClaimedReceiptJob currentClaim = claimNext();
+        imageStorage.failNext(temporaryStorageFailure());
+
+        assertThatThrownBy(() -> processor.process(oldClaim))
+                .isInstanceOf(JobOwnershipLostException.class);
+
+        assertThat(job(uploaded).status()).isEqualTo(ExtractionJobStatus.PROCESSING);
+        assertThat(job(uploaded).claimToken()).isEqualTo(currentClaim.claimToken());
+        assertThat(job(uploaded).attemptCount()).isEqualTo(2);
+        assertThat(events(uploaded, AuditAction.EXTRACTION_RETRY_SCHEDULED)).isEmpty();
+        assertThat(events(uploaded, AuditAction.EXTRACTION_FAILED)).isEmpty();
+        assertThat(extractor.invocationCount()).isZero();
+
+        processor.process(currentClaim);
+        assertThat(job(uploaded).status()).isEqualTo(ExtractionJobStatus.COMPLETED);
+        assertThat(extractor.invocationCount()).isEqualTo(1);
+    }
+
+    private ReceiptImageStorageException temporaryStorageFailure() {
+        return new ReceiptImageStorageException("S3 연결 시간이 초과되었습니다.", null, true);
+    }
+
     private ExtractionException failure() {
         return new ExtractionException("OpenAI extraction failed");
     }
@@ -148,6 +336,11 @@ class ExtractionResilienceIntegrationTest {
                 .stream().map(event -> event.action()).toList();
     }
 
+    private List<AuditEvent> events(UploadResult uploaded, AuditAction action) {
+        return auditRepository.findByReceiptIdOrderByOccurredAtAsc(uploaded.receipt().id())
+                .stream().filter(event -> event.action() == action).toList();
+    }
+
     private byte[] png(Color color) throws Exception {
         BufferedImage image = new BufferedImage(800, 1200, BufferedImage.TYPE_INT_RGB);
         Graphics2D graphics = image.createGraphics();
@@ -169,8 +362,51 @@ class ExtractionResilienceIntegrationTest {
 
         @Bean
         @Primary
+        ScriptedImageStorage scriptedImageStorage() {
+            return new ScriptedImageStorage();
+        }
+
+        @Bean
+        @Primary
         MutableClock mutableClock() {
             return new MutableClock();
+        }
+    }
+
+    static final class ScriptedImageStorage implements ReceiptImageStorage {
+        private final Map<String, byte[]> images = new ConcurrentHashMap<>();
+        private final Queue<ReceiptImageStorageException> failures = new ConcurrentLinkedQueue<>();
+        private final AtomicInteger loadCount = new AtomicInteger();
+
+        @Override
+        public String store(String companyId, String imageSha256, byte[] bytes) {
+            String key = companyId + "/" + imageSha256;
+            images.putIfAbsent(key, bytes.clone());
+            return key;
+        }
+
+        @Override
+        public byte[] load(String storageKey) {
+            loadCount.incrementAndGet();
+            ReceiptImageStorageException failure = failures.poll();
+            if (failure != null) throw failure;
+            byte[] bytes = images.get(storageKey);
+            if (bytes == null) throw new ReceiptImageNotFoundException(null);
+            return bytes.clone();
+        }
+
+        void failNext(ReceiptImageStorageException... exceptions) {
+            failures.addAll(List.of(exceptions));
+        }
+
+        int loadCount() {
+            return loadCount.get();
+        }
+
+        void reset() {
+            images.clear();
+            failures.clear();
+            loadCount.set(0);
         }
     }
 

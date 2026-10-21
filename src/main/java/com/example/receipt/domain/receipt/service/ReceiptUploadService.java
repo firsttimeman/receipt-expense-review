@@ -13,6 +13,7 @@ import com.example.receipt.domain.receipt.repository.IdempotencyRecordRepository
 import com.example.receipt.domain.receipt.repository.ReceiptRepository;
 import com.example.receipt.global.lock.DuplicateReceiptLock;
 import com.example.receipt.global.storage.ReceiptImageStorage;
+import com.example.receipt.global.storage.ReceiptImageFormat;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
@@ -45,6 +46,8 @@ public class ReceiptUploadService {
         if (bytes == null || bytes.length == 0) {
             throw new IllegalArgumentException("업로드 파일은 비어 있을 수 없습니다.");
         }
+        // 클라이언트가 보낸 확장자나 Content-Type 대신 실제 파일 헤더를 확인합니다.
+        ReceiptImageFormat format = ReceiptImageFormat.detect(bytes);
         String normalizedKey = normalize(idempotencyKey);
         Optional<UploadResult> replay = findIdempotentReplay(companyId, normalizedKey, ownerId);
         if (replay.isPresent()) return replay.get();
@@ -58,7 +61,7 @@ public class ReceiptUploadService {
         try {
             return duplicateReceiptLock.execute(companyId, imageSha256,
                     () -> acceptWhileLocked(companyId, normalizedKey, fileName,
-                            contentType, bytes, imageSha256, ownerId));
+                            format.contentType(), bytes, imageSha256, ownerId));
         } catch (ReceiptConflictException exception) {
             // 락 대기 중 다른 요청이 DB 생성을 끝냈다면 충돌 응답 대신 그 결과로 수렴한다.
             return findProcessedDuplicate(companyId, imageSha256, ownerId)

@@ -113,6 +113,7 @@ td small { display: block; color: #9aa191; font-size: 10px; margin-top: 3px; }
 .empty h3 { font-size: 14px; margin: 10px 0 5px; color: #697563; }
 .empty p { font-size: 12px; margin: 0; }
 .two-cards { display: grid; grid-template-columns: 1.1fr 1fr; gap: 24px; align-items: start; }
+.employee-actions { display: grid; gap: 24px; min-width: 0; }
 .padded { padding: 28px; }
 .result-box { padding: 18px; border: 1px solid #dae7d4; background: #f6faf2; border-radius: 10px; margin-top: 22px; }
 .result-box input { font-family: monospace; font-size: 11px; }
@@ -125,6 +126,10 @@ dialog::backdrop { background: #1d2c2580; backdrop-filter: blur(3px); }
 .icon-button { font-size: 26px; background: #f4f6f1; color: #7d8975; padding: 0; width: 34px; height: 34px; flex-shrink: 0; }
 .detail-summary { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 14px 0; }
 .detail-summary .text-button { margin-left: auto; }
+.original-image-panel { margin: 18px 0; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
+.original-image-panel .form-help { margin: 0 0 12px; }
+.original-image-panel .error { color: #9c4438; }
+#original-image { display: block; max-width: 100%; height: auto; margin: 0 auto; border-radius: 4px; }
 fieldset { padding: 0; margin: 0; border: 0; min-width: 0; }
 fieldset:disabled input { background: #f8f9f6; color: #7f897b; }
 .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; }

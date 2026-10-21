@@ -9,6 +9,7 @@ import com.example.receipt.domain.receipt.repository.IdempotencyRecordRepository
 import com.example.receipt.domain.receipt.repository.ReceiptRepository;
 import com.example.receipt.global.lock.DuplicateReceiptLock;
 import com.example.receipt.global.storage.ReceiptImageStorage;
+import com.example.receipt.global.storage.UnsupportedReceiptImageException;
 import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
@@ -16,9 +17,11 @@ import java.util.Optional;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 @SuppressWarnings("unchecked")
 class ReceiptUploadServiceTest {
@@ -49,10 +52,32 @@ class ReceiptUploadServiceTest {
                 duplicateReceiptLock, imageStorage, Clock.systemUTC());
 
         UploadResult result = service.upload(
-                "company", null, "receipt.png", "image/png", new byte[]{1}, 1L);
+                "company", null, "receipt.png", "image/png",
+                new byte[]{(byte) 0x89, 'P', 'N', 'G', 13, 10, 26, 10}, 1L);
 
         assertThat(result.receipt()).isSameAs(receipt);
         assertThat(result.job()).isSameAs(job);
         assertThat(result.created()).isFalse();
+    }
+
+    @Test
+    void rejectsUnsupportedImageBeforeReplayLookupStorageAndLock() {
+        ReceiptPersistenceService persistenceService = mock(ReceiptPersistenceService.class);
+        ReceiptRepository receiptRepository = mock(ReceiptRepository.class);
+        ReceiptExtractionJobRepository jobRepository = mock(ReceiptExtractionJobRepository.class);
+        IdempotencyRecordRepository idempotencyRepository = mock(IdempotencyRecordRepository.class);
+        DuplicateReceiptLock duplicateReceiptLock = mock(DuplicateReceiptLock.class);
+        ReceiptImageStorage imageStorage = mock(ReceiptImageStorage.class);
+        ReceiptUploadService service = new ReceiptUploadService(
+                persistenceService, receiptRepository, jobRepository, idempotencyRepository,
+                duplicateReceiptLock, imageStorage, Clock.systemUTC());
+
+        byte[] webp = java.util.Base64.getDecoder().decode(
+                "UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA");
+        assertThatThrownBy(() -> service.upload(
+                "company", "existing-key", "disguised.jpg", "image/jpeg", webp, 1L))
+                .isInstanceOf(UnsupportedReceiptImageException.class);
+        verifyNoInteractions(persistenceService, receiptRepository, jobRepository,
+                idempotencyRepository, duplicateReceiptLock, imageStorage);
     }
 }

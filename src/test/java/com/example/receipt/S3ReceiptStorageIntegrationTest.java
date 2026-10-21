@@ -3,9 +3,11 @@ package com.example.receipt;
 import com.example.receipt.domain.employee.entity.Employee;
 import com.example.receipt.domain.employee.model.EmployeeRole;
 import com.example.receipt.domain.employee.repository.EmployeeRepository;
+import com.example.receipt.global.storage.ReceiptImageNotFoundException;
 import com.example.receipt.global.storage.ReceiptImageStorage;
 import com.example.receipt.global.storage.ReceiptImageStorageException;
 import com.example.receipt.global.storage.S3ReceiptImageStorage;
+import com.example.receipt.global.storage.UnsupportedReceiptImageException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterAll;
@@ -130,6 +132,12 @@ class S3ReceiptStorageIntegrationTest {
             JsonNode accepted = json.readTree(upload.body());
             receiptId = accepted.path("receiptId").asLong();
             assertThat(accepted.path("jobStatus").asText()).isEqualTo("QUEUED");
+            HttpResponse<byte[]> original = browser.getImage(uploader, "/api/receipts/" + receiptId + "/image");
+            assertThat(original.statusCode()).isEqualTo(200);
+            assertThat(original.headers().firstValue("Content-Type")).contains("image/png");
+            assertThat(original.headers().firstValue("Content-Disposition")).contains("inline");
+            assertThat(original.headers().firstValue("Cache-Control")).contains("no-store");
+            assertThat(original.body()).isEqualTo(png);
         }
 
         // 업로드를 처리한 서버가 종료되어도 다른 서버가 DB의 키로 S3 이미지를 읽습니다.
@@ -153,6 +161,16 @@ class S3ReceiptStorageIntegrationTest {
             var stored = client.getObjectAsBytes(request -> request.bucket(BUCKET).key(objects.get(0).key()));
             assertThat(stored.response().contentType()).isEqualTo("image/png");
             assertThat(stored.asByteArray()).isEqualTo(png);
+            HttpResponse<byte[]> original = browser.getImage(third, "/api/receipts/" + receiptId + "/image");
+            assertThat(original.statusCode()).isEqualTo(200);
+            assertThat(original.headers().firstValue("Content-Type")).contains("image/png");
+            assertThat(original.body()).isEqualTo(png);
+
+            // DB에 영수증이 남아 있어도 원본 객체가 없으면 404로 구별합니다.
+            client.deleteObject(request -> request.bucket(BUCKET).key(objects.get(0).key()));
+            HttpResponse<String> missing = browser.get(third, "/api/receipts/" + receiptId + "/image");
+            assertThat(missing.statusCode()).isEqualTo(404);
+            assertThat(json.readTree(missing.body()).path("detail").asText()).isEqualTo("원본 이미지를 찾을 수 없습니다.");
         }
     }
 
@@ -173,14 +191,20 @@ class S3ReceiptStorageIntegrationTest {
     }
 
     private static Stream<Arguments> imageFormats() throws Exception {
-        byte[] webp = Base64.getDecoder().decode("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA");
         return Stream.of(
                 Arguments.of(image("jpg"), "jpg", "image/jpeg"),
-                Arguments.of(image("png"), "png", "image/png"),
-                Arguments.of(webp, "webp", "image/webp"),
-                Arguments.of(new byte[]{(byte) 0xFF, (byte) 0xD8}, "bin", "application/octet-stream"),
-                Arguments.of("<html>not an image</html>".getBytes(StandardCharsets.UTF_8),
-                        "bin", "application/octet-stream"));
+                Arguments.of(image("png"), "png", "image/png"));
+    }
+
+    @Test
+    void rejectsWebpBeforeWritingAnS3Object() {
+        var storage = new S3ReceiptImageStorage(client, BUCKET, "unsupported");
+        byte[] webp = Base64.getDecoder().decode("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA");
+
+        assertThatThrownBy(() -> storage.store("internal", "a".repeat(64), webp))
+                .isInstanceOf(UnsupportedReceiptImageException.class);
+        assertThat(client.listObjectsV2(request -> request.bucket(BUCKET).prefix("unsupported/")).contents())
+                .isEmpty();
     }
 
     @Test
@@ -214,15 +238,16 @@ class S3ReceiptStorageIntegrationTest {
     }
 
     @Test
-    void missingObjectsAndBucketsUseTheExistingStorageFailureContract() {
+    void distinguishesMissingObjectsFromStorageWriteFailures() throws Exception {
         var storage = new S3ReceiptImageStorage(client, BUCKET, "missing");
         assertThatThrownBy(() -> storage.load("missing-image.bin"))
-                .isInstanceOf(ReceiptImageStorageException.class)
+                .isInstanceOf(ReceiptImageNotFoundException.class)
                 .hasCauseInstanceOf(S3Exception.class)
-                .hasMessage("공유 저장소에서 영수증 이미지를 읽지 못했습니다.");
+                .hasMessage("원본 이미지를 찾을 수 없습니다.");
 
         var missingBucket = new S3ReceiptImageStorage(client, "unavailable-bucket", "");
-        assertThatThrownBy(() -> missingBucket.store("internal", "a".repeat(64), new byte[]{1, 2, 3}))
+        byte[] image = png();
+        assertThatThrownBy(() -> missingBucket.store("internal", "a".repeat(64), image))
                 .isInstanceOf(ReceiptImageStorageException.class)
                 .hasCauseInstanceOf(S3Exception.class)
                 .hasMessage("공유 저장소에 영수증 이미지를 저장하지 못했습니다.");
@@ -277,6 +302,14 @@ class S3ReceiptStorageIntegrationTest {
 
         private HttpResponse<String> get(ServletWebServerApplicationContext server, String path) throws Exception {
             return send(server, "GET", path, new byte[0], null, "application/json");
+        }
+
+        private HttpResponse<byte[]> getImage(ServletWebServerApplicationContext server, String path) throws Exception {
+            var request = HttpRequest.newBuilder(URI.create("http://localhost:" + server.getWebServer().getPort() + path))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Cookie", cookie)
+                    .GET().build();
+            return http.send(request, HttpResponse.BodyHandlers.ofByteArray());
         }
 
         private HttpResponse<String> change(ServletWebServerApplicationContext server, String path, Object body) throws Exception {

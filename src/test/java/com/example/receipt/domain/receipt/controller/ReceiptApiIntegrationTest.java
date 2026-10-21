@@ -9,18 +9,28 @@ import com.example.receipt.domain.receipt.repository.AuditEventRepository;
 import com.example.receipt.domain.receipt.repository.IdempotencyRecordRepository;
 import com.example.receipt.domain.receipt.repository.ReceiptRepository;
 import com.example.receipt.domain.receipt.service.ReceiptUploadService;
+import com.example.receipt.global.storage.ReceiptImageNotFoundException;
+import com.example.receipt.global.storage.ReceiptImageStorage;
+import com.example.receipt.global.storage.ReceiptImageStorageException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.SpyBean;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -37,6 +47,8 @@ import java.util.Set;
 import java.util.concurrent.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
@@ -45,6 +57,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Testcontainers
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class ReceiptApiIntegrationTest {
     @Container
     static final GenericContainer<?> REDIS = new GenericContainer<>("redis:7.2-alpine").withExposedPorts(6379);
@@ -68,6 +81,7 @@ class ReceiptApiIntegrationTest {
     @Autowired ReceiptExtractionJobRepository jobRepository;
     @Autowired AuditEventRepository auditRepository;
     @Autowired IdempotencyRecordRepository idempotencyRepository;
+    @SpyBean ReceiptImageStorage imageStorage;
 
     @Autowired com.example.receipt.domain.employee.repository.EmployeeRepository employees;
     @Autowired org.springframework.security.crypto.password.PasswordEncoder encoder;
@@ -128,10 +142,130 @@ class ReceiptApiIntegrationTest {
         process(small.path("receiptId").asLong());
         assertThat(getReceipt(small.path("receiptId").asLong()).path("status").asText())
                 .isEqualTo("NEEDS_RECAPTURE");
-        JsonNode broken = upload("broken.png", new byte[]{1, 2, 3, 4}, null, 202);
+        // PNG 헤더는 있지만 본문이 손상된 이미지는 Worker 품질 검사에서 판독 불가로 처리합니다.
+        JsonNode broken = upload("broken.png", java.util.Arrays.copyOf(png(800, 1200), 16), null, 202);
         process(broken.path("receiptId").asLong());
         assertThat(getReceipt(broken.path("receiptId").asLong()).path("status").asText())
                 .isEqualTo("UNREADABLE");
+    }
+
+    @ParameterizedTest
+    @CsvSource({"jpg, image/jpeg", "jpeg, image/jpeg", "png, image/png"})
+    void acceptsJpegAndPngUsingTheirActualContentType(String format, String expectedType) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ImageIO.write(new BufferedImage(800, 1200, BufferedImage.TYPE_INT_RGB), format, output);
+        // 업로드 헬퍼는 항상 image/png를 보내므로 JPEG의 Content-Type 보정도 검증합니다.
+        JsonNode accepted = upload("receipt." + format, output.toByteArray(), null, 202);
+        long id = accepted.path("receiptId").asLong();
+        assertThat(getReceipt(id).path("file").path("contentType").asText()).isEqualTo(expectedType);
+        // 추출 대기 중에도 제출자는 원본을 볼 수 있습니다.
+        mockMvc.perform(get("/api/receipts/{id}/image", id).cookie(submitterCookie))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType(expectedType))
+                .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION, "inline"))
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(header().string("X-Content-Type-Options", "nosniff"))
+                .andExpect(content().bytes(output.toByteArray()));
+        process(id);
+        assertThat(getReceipt(id).path("jobStatus").asText()).isEqualTo("COMPLETED");
+        // 추출 이후 검수자에게도 수정되지 않은 원본 바이트를 제공합니다.
+        mockMvc.perform(get("/api/receipts/{id}/image", id).cookie(sessionCookie))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType(expectedType))
+                .andExpect(content().bytes(output.toByteArray()));
+    }
+
+    @Test
+    void checksImageReadPermissionBeforeAccessingStorage() throws Exception {
+        byte[] image = png(800, 1200);
+        long id = upload("receipt.png", image, null, 202).path("receiptId").asLong();
+        var other = new com.example.receipt.domain.employee.entity.Employee("other-submitter", "다른 직원",
+                com.example.receipt.domain.employee.model.EmployeeRole.EMPLOYEE);
+        other.setPassword(encoder.encode("regression-password-123"));
+        employees.saveAndFlush(other);
+        Cookie otherCookie = login(other.loginId());
+        clearInvocations(imageStorage);
+
+        mockMvc.perform(get("/api/receipts/{id}/image", id))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/receipts/{id}/image", id).cookie(otherCookie))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(get("/api/receipts/{id}/image", Long.MAX_VALUE).cookie(submitterCookie))
+                .andExpect(status().isNotFound());
+        verify(imageStorage, never()).load(anyString());
+
+        var admin = new com.example.receipt.domain.employee.entity.Employee("image-admin", "이미지 조회 관리자",
+                com.example.receipt.domain.employee.model.EmployeeRole.ADMIN);
+        admin.setPassword(encoder.encode("regression-password-123"));
+        employees.saveAndFlush(admin);
+        mockMvc.perform(get("/api/receipts/{id}/image", id).cookie(login(admin.loginId())))
+                .andExpect(status().isOk())
+                .andExpect(content().bytes(image));
+        verify(imageStorage).load(anyString());
+    }
+
+    @Test
+    void readsOriginalImageAfterExtractionFailureWithoutHoldingDatabaseTransaction() throws Exception {
+        byte[] image = png(800, 1200);
+        long id = upload("receipt.png", image, null, 202).path("receiptId").asLong();
+        ClaimedReceiptJob claimed = claimService.claimAvailable(
+                "image-test", 1, Duration.ofSeconds(30)).get(0);
+        var job = jobRepository.findByReceiptId(id).orElseThrow();
+        job.fail(claimed.workerId(), claimed.claimToken(), "TEST_EXTRACTION_FAILURE",
+                "추출 실패", java.time.Instant.now());
+        jobRepository.saveAndFlush(job);
+        doAnswer(invocation -> {
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive())
+                    .as("S3 응답을 기다리는 동안 DB 트랜잭션을 유지하지 않습니다.").isFalse();
+            return invocation.callRealMethod();
+        }).when(imageStorage).load(anyString());
+
+        mockMvc.perform(get("/api/receipts/{id}/image", id).cookie(submitterCookie))
+                .andExpect(status().isOk())
+                .andExpect(content().bytes(image));
+        assertThat(jobRepository.findByReceiptId(id).orElseThrow().status().name()).isEqualTo("FAILED");
+    }
+
+    @Test
+    void distinguishesMissingImageFromTemporaryStorageFailureWithoutLeakingStorageDetails() throws Exception {
+        long id = upload("receipt.png", png(800, 1200), null, 202).path("receiptId").asLong();
+        doThrow(new ReceiptImageNotFoundException(null)).when(imageStorage).load(anyString());
+        mockMvc.perform(get("/api/receipts/{id}/image", id).cookie(submitterCookie))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.detail").value("원본 이미지를 찾을 수 없습니다."));
+
+        doThrow(new ReceiptImageStorageException("secret-bucket/private-key: access denied", null))
+                .when(imageStorage).load(anyString());
+        mockMvc.perform(get("/api/receipts/{id}/image", id).cookie(submitterCookie))
+                .andExpect(status().isBadGateway())
+                .andExpect(jsonPath("$.detail").value("이미지 저장소에 접근하지 못했습니다. 잠시 후 다시 시도해 주세요."));
+
+        // 저장소에 잘못된 내용이 있어도 HTML 등을 이미지 응답으로 그대로 내보내지 않습니다.
+        doReturn("<html>not an image</html>".getBytes(StandardCharsets.UTF_8))
+                .when(imageStorage).load(anyString());
+        mockMvc.perform(get("/api/receipts/{id}/image", id).cookie(submitterCookie))
+                .andExpect(status().isBadGateway())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.detail").value("이미지 저장소에 접근하지 못했습니다. 잠시 후 다시 시도해 주세요."));
+    }
+
+    @ParameterizedTest
+    @MethodSource("unsupportedImages")
+    void rejectsOtherFormatsEvenWithPngFilenameAndContentType(byte[] bytes) throws Exception {
+        JsonNode error = upload("disguised.png", bytes, "unsupported-upload", 415);
+        assertThat(error.path("detail").asText()).isEqualTo("JPG 또는 PNG 이미지만 업로드할 수 있습니다.");
+        assertThat(receiptRepository.count()).isZero();
+        assertThat(jobRepository.count()).isZero();
+        assertThat(idempotencyRepository.count()).isZero();
+        assertThat(auditRepository.count()).isZero();
+    }
+
+    private static java.util.stream.Stream<byte[]> unsupportedImages() {
+        return java.util.stream.Stream.of(
+                java.util.Base64.getDecoder().decode("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA"),
+                "GIF89a".getBytes(StandardCharsets.US_ASCII),
+                "%PDF-1.7".getBytes(StandardCharsets.US_ASCII),
+                "not an image".getBytes(StandardCharsets.US_ASCII));
     }
 
     @Test

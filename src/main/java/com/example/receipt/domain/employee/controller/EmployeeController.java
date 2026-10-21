@@ -6,6 +6,8 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.CacheControl;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
@@ -20,6 +22,13 @@ public class EmployeeController {
     @ResponseStatus(HttpStatus.CREATED)
     public EmployeeService.IssuedEmployee issue(@Valid @RequestBody IssueEmployeeRequest request) {
         return service.issue(request);
+    }
+
+    @PostMapping("/{id}/setup-token")
+    public ResponseEntity<EmployeeService.IssuedEmployee> reissueSetupToken(@PathVariable Long id) {
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(service.reissueSetupToken(id));
     }
 
     public record ActiveRequest(@NotNull Boolean active) {

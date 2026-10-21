@@ -82,6 +82,10 @@ public class Employee {
         return setupExpiresAt;
     }
 
+    public boolean hasSetupToken(String hash) {
+        return setupTokenHash != null && setupTokenHash.equals(hash);
+    }
+
     public void invite(String hash, Instant expires) {
         setupTokenHash = hash;
         setupExpiresAt = expires;

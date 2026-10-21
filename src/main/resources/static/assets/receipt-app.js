@@ -4,8 +4,9 @@
 const $ = (selector) => document.querySelector(selector);
 const state = {
     employee: null, view: "mine", page: 0, detail: null,
-    listRequest: 0, detailRequest: 0, listTimer: null, detailTimer: null,
-    previewUrl: null, uploadKey: null, requests: new Set()
+    listRequest: 0, detailRequest: 0, employeeTokenRequest: 0,
+    previewUrl: null, uploadKey: null, requests: new Set(),
+    originalImageUrl: null, originalImageRequest: null
 };
 const roleNames = { EMPLOYEE: "직원", REVIEWER: "검수자", ADMIN: "관리자" };
 const statusNames = {
@@ -39,8 +40,8 @@ async function readResponse(response) {
     try { return JSON.parse(text); } catch { return null; }
 }
 
-async function api(path, { method = "GET", body, headers = {} } = {}) {
-    const controller = new AbortController();
+async function api(path, { method = "GET", body, headers = {}, responseType = "json",
+    controller = new AbortController() } = {}) {
     state.requests.add(controller);
     const options = { method, credentials: "same-origin", signal: controller.signal, headers: { ...headers } };
     try {
@@ -57,22 +58,23 @@ async function api(path, { method = "GET", body, headers = {} } = {}) {
             options.body = JSON.stringify(body);
         }
         const response = await fetch(path, { ...options, cache: "no-store" });
-        const data = await readResponse(response);
         if (!response.ok) {
+            const data = await readResponse(response);
             const messages = {
                 400: path === "/api/auth/password" ? "설정 토큰과 비밀번호를 확인하세요. 토큰이 만료되었거나 이미 사용되었을 수 있습니다." : "입력값을 확인하세요.",
                 401: path === "/api/auth/login" ? "로그인 ID와 비밀번호를 확인하세요." : "세션이 만료되었습니다. 다시 로그인하세요.",
                 403: "권한이 없거나 인증 정보가 변경되었습니다. 다시 조회하거나 로그인하세요.",
-                404: "해당 자료가 없거나 접근할 수 없습니다.",
+                404: path.endsWith("/image") ? "원본 이미지를 찾을 수 없거나 접근할 수 없습니다." : "해당 자료가 없거나 접근할 수 없습니다.",
                 409: "데이터가 변경되었거나 중복된 요청입니다. 최신 내용을 다시 조회하세요.",
-                413: "이미지 크기는 10MB 이하여야 합니다."
+                413: "이미지 크기는 10MB 이하여야 합니다.",
+                502: "자료를 가져오지 못했습니다. 잠시 후 다시 시도하세요."
             };
             if (response.status === 401 && state.employee) endSession();
             const error = new Error(data?.detail || messages[response.status] || `요청에 실패했습니다. (HTTP ${response.status})`);
             error.status = response.status;
             throw error;
         }
-        return data;
+        return responseType === "blob" ? await response.blob() : await readResponse(response);
     } catch (error) {
         if (error instanceof TypeError) throw new Error("서버에 연결할 수 없습니다. Spring Boot가 실행 중인지 확인하세요.");
         throw error;
@@ -99,10 +101,33 @@ function switchAuthTab(setup) {
 }
 
 function clearIssuedToken() {
-    $("#issued-token").value = "";
-    $("#issued-result").hidden = true;
-    $("#issued-employee").textContent = "";
-    $("#issued-expires").textContent = "";
+    state.employeeTokenRequest++;
+    for (const prefix of ["issued", "reissued"]) {
+        $(`#${prefix}-token`).value = "";
+        $(`#${prefix}-result`).hidden = true;
+        $(`#${prefix}-employee`).textContent = "";
+        $(`#${prefix}-expires`).textContent = "";
+    }
+}
+
+function showSetupToken(prefix, issued) {
+    $(`#${prefix}-result`).hidden = false;
+    $(`#${prefix}-employee`).textContent =
+        `${issued.employee.name} · ${issued.employee.loginId} · 직원 번호 #${issued.employee.id}`;
+    $(`#${prefix}-token`).value = issued.setupToken;
+    $(`#${prefix}-expires`).textContent = `유효 기간: ${dateTime(issued.expiresAt)}까지`;
+}
+
+async function copySetupToken(selector) {
+    const input = $(selector);
+    if (!input.value) return;
+    try {
+        await navigator.clipboard.writeText(input.value);
+        notify("설정 토큰을 복사했습니다.");
+    } catch {
+        input.select();
+        notify("토큰이 선택되었습니다. Command+C 또는 Ctrl+C로 복사하세요.");
+    }
 }
 
 function clearFile() {
@@ -119,12 +144,11 @@ function endSession() {
     for (const request of state.requests) request.abort();
     state.employee = null;
     state.listRequest++;
-    clearTimeout(state.listTimer);
     closeDetail();
     clearFile();
     clearIssuedToken();
     $("#receipt-rows").replaceChildren();
-    for (const selector of ["#login-form", "#setup-form", "#issue-form", "#active-form"]) $(selector).reset();
+    for (const selector of ["#login-form", "#setup-form", "#issue-form", "#reissue-form", "#active-form"]) $(selector).reset();
     $("#workspace").hidden = true;
     $("#auth-screen").hidden = false;
     $("#breadcrumb").textContent = "시작하기";
@@ -155,7 +179,6 @@ async function enterWorkspace(employee) {
 
 async function changeView(view) {
     closeDetail();
-    clearTimeout(state.listTimer);
     state.listRequest++;
     clearIssuedToken();
     state.view = view;
@@ -186,7 +209,6 @@ function statusBadge(receipt) {
 }
 
 async function loadReceipts(background = false) {
-    clearTimeout(state.listTimer);
     const requestId = ++state.listRequest;
     const filters = new FormData($("#filter-form"));
     if (filters.get("from") && filters.get("to") && filters.get("from") > filters.get("to")) {
@@ -228,14 +250,12 @@ async function loadReceipts(background = false) {
     $("#page-label").textContent = `${page.page + 1} / ${Math.max(page.totalPages, 1)} 페이지 · ${page.totalElements}건`;
     $("#previous-page").disabled = page.page === 0;
     $("#next-page").disabled = !page.hasNext;
-    if (page.content.some((receipt) => pendingJobs.has(receipt.jobStatus))) {
-        state.listTimer = setTimeout(() => run(null, () => loadReceipts(true)), 3000);
-    }
+    $("#list-pending-hint").hidden = !page.content.some((receipt) => pendingJobs.has(receipt.jobStatus));
 }
 
 function closeDetail() {
-    clearTimeout(state.detailTimer);
     state.detailRequest++;
+    clearOriginalImage();
     state.detail = null;
     $("#receipt-dialog").close();
     $("#detail-json").textContent = "";
@@ -246,6 +266,83 @@ function closeDetail() {
     $("#decision-form").reset();
 }
 
+function clearOriginalImage() {
+    state.originalImageRequest?.abort();
+    state.originalImageRequest = null;
+    if (state.originalImageUrl) URL.revokeObjectURL(state.originalImageUrl);
+    state.originalImageUrl = null;
+    const image = $("#original-image");
+    image.onload = null;
+    image.onerror = null;
+    image.removeAttribute("src");
+    image.hidden = true;
+    $("#original-image-panel").hidden = true;
+    $("#original-image-panel").setAttribute("aria-busy", "false");
+    $("#original-image-status").textContent = "";
+    $("#original-image-status").classList.remove("error");
+    $("#show-original-image").textContent = "원본 보기";
+    $("#show-original-image").setAttribute("aria-expanded", "false");
+}
+
+async function toggleOriginalImage() {
+    if (!state.detail) return;
+    if (!$("#original-image-panel").hidden) {
+        clearOriginalImage();
+        return;
+    }
+
+    const receipt = state.detail;
+    const controller = new AbortController();
+    state.originalImageRequest = controller;
+    const panel = $("#original-image-panel");
+    const status = $("#original-image-status");
+    const image = $("#original-image");
+    panel.hidden = false;
+    panel.setAttribute("aria-busy", "true");
+    status.textContent = "원본 이미지를 불러오고 있습니다…";
+    $("#show-original-image").textContent = "원본 닫기";
+    $("#show-original-image").setAttribute("aria-expanded", "true");
+
+    // 상세 화면이 닫히거나 다른 영수증으로 바뀌면 늦게 도착한 이미지를 표시하지 않습니다.
+    const isCurrent = () => state.employee && state.detail?.id === receipt.id &&
+        state.originalImageRequest === controller;
+    try {
+        const blob = await api(`/api/receipts/${receipt.id}/image`, { responseType: "blob", controller });
+        if (!isCurrent()) return;
+        if (!["image/jpeg", "image/png"].includes(blob.type)) {
+            throw new Error("원본 이미지를 표시할 수 없습니다. JPG 또는 PNG 파일인지 확인하세요.");
+        }
+
+        state.originalImageUrl = URL.createObjectURL(blob);
+        image.alt = `영수증 #${receipt.id} 원본: ${receipt.file?.originalFileName || "업로드한 이미지"}`;
+        image.onload = () => {
+            if (!isCurrent()) return;
+            panel.setAttribute("aria-busy", "false");
+            status.textContent = "업로드한 사진과 추출 내용을 비교하세요.";
+            image.hidden = false;
+        };
+        image.onerror = () => {
+            if (!isCurrent()) return;
+            panel.setAttribute("aria-busy", "false");
+            status.textContent = "이미지를 표시할 수 없습니다. 파일이 손상되었을 수 있습니다.";
+            status.classList.add("error");
+            URL.revokeObjectURL(state.originalImageUrl);
+            state.originalImageUrl = null;
+            image.removeAttribute("src");
+        };
+        image.src = state.originalImageUrl;
+    } catch (error) {
+        if (error.name === "AbortError") return;
+        if (error.status === 401) {
+            notify(error.message, true);
+        } else if (isCurrent()) {
+            panel.setAttribute("aria-busy", "false");
+            status.textContent = error.message;
+            status.classList.add("error");
+        }
+    }
+}
+
 async function openDetail(id) {
     closeDetail();
     $("#detail-notice").hidden = true;
@@ -254,7 +351,6 @@ async function openDetail(id) {
     if (!state.employee || requestId !== state.detailRequest) return;
     renderDetail(receipt);
     $("#receipt-dialog").showModal();
-    scheduleDetailRefresh();
 }
 
 async function refreshDetail() {
@@ -264,15 +360,7 @@ async function refreshDetail() {
     if (!state.employee || requestId !== state.detailRequest) return;
     const wasPending = pendingJobs.has(state.detail.jobStatus);
     renderDetail(receipt);
-    scheduleDetailRefresh();
     if (wasPending && !pendingJobs.has(receipt.jobStatus)) await loadReceipts(true);
-}
-
-function scheduleDetailRefresh() {
-    clearTimeout(state.detailTimer);
-    if (state.detail && pendingJobs.has(state.detail.jobStatus)) {
-        state.detailTimer = setTimeout(() => run(null, refreshDetail), 2000);
-    }
 }
 
 function addLineItem(item = {}) {
@@ -308,9 +396,17 @@ function renderDetail(receipt) {
     const canEdit = !pending && !terminal && receipt.status && receipt.ownerEmployeeId != null &&
         (state.employee.role !== "EMPLOYEE" || editableStatuses.has(receipt.status));
     $("#correction-fields").disabled = !canEdit;
-    $("#decision-form").hidden = !canEdit || state.employee.role === "EMPLOYEE" || receipt.ownerEmployeeId === state.employee.id ||
-        ["NEEDS_RECAPTURE", "UNREADABLE"].includes(receipt.status);
-    $("#detail-hint").textContent = pending ? "정보를 추출하고 있습니다. 2초마다 자동으로 확인합니다." :
+    const canReview = canEdit && state.employee.role !== "EMPLOYEE" && receipt.ownerEmployeeId !== state.employee.id;
+    const needsCorrectionBeforeApproval = ["NEEDS_RECAPTURE", "UNREADABLE"].includes(receipt.status);
+    const hasApprovalFields = receipt.currentData?.shopName?.trim() && receipt.currentData.date &&
+        Number(receipt.currentData.totalAmount) > 0;
+    $("#decision-form").hidden = !canReview;
+    $("#approve-receipt").disabled = needsCorrectionBeforeApproval || !hasApprovalFields;
+    $("#decision-hint").textContent = needsCorrectionBeforeApproval ?
+        "이 영수증은 반려할 수 있습니다. 승인하려면 원본을 확인하고 필요한 내용을 수정해 저장하세요." :
+        !hasApprovalFields ? "승인하려면 상호명·사용일·0보다 큰 총 금액을 입력하고 저장하세요. 반려는 가능합니다." :
+        "원본과 저장된 내용을 확인한 뒤 승인하거나 반려하세요.";
+    $("#detail-hint").textContent = pending ? "영수증을 처리하고 있습니다. 잠시 후 ‘새로고침’을 눌러 결과를 확인하세요." :
         terminal ? "최종 처리된 영수증입니다. 내용을 변경할 수 없습니다." :
         canEdit ? "추출된 내용을 확인하세요. 변경된 내용은 저장 후 반영됩니다." : "현재 상태에서는 내용을 변경할 수 없습니다.";
     for (const key of correctionKeys) $("#correction-form").elements[key].value = receipt.currentData?.[key] ?? "";
@@ -383,9 +479,9 @@ $("#receipt-file").addEventListener("change", () => {
     $("#file-preview").hidden = true;
     $("#file-name").textContent = file?.name || "영수증 이미지 선택";
     if (!file) return;
-    if (file.size > 10 * 1024 * 1024 || !["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+    if (file.size > 10 * 1024 * 1024 || !["image/jpeg", "image/png"].includes(file.type)) {
         clearFile();
-        notify("10MB 이하의 JPG, PNG, WEBP 이미지를 선택하세요.", true);
+        notify("10MB 이하의 JPG, PNG 이미지를 선택하세요.", true);
         return;
     }
     state.previewUrl = URL.createObjectURL(file);
@@ -399,7 +495,7 @@ onSubmit("#upload-form", async () => {
     clearFile();
     state.page = 0;
     $("#filter-form").reset();
-    notify(`영수증 #${accepted.receiptId}이 접수되었습니다.`);
+    notify(`영수증 #${accepted.receiptId}이 접수되었습니다. 처리 결과는 ‘새로고침’을 눌러 확인하세요.`);
     await loadReceipts();
     await openDetail(accepted.receiptId);
 });
@@ -411,6 +507,7 @@ $("#next-page").addEventListener("click", () => { state.page++; run(null, () => 
 $("#close-detail").addEventListener("click", closeDetail);
 $("#receipt-dialog").addEventListener("cancel", (event) => { event.preventDefault(); closeDetail(); });
 $("#refresh-detail").addEventListener("click", (event) => run(event.currentTarget, refreshDetail));
+$("#show-original-image").addEventListener("click", toggleOriginalImage);
 $("#refresh-audit").addEventListener("click", (event) => run(event.currentTarget, loadAudit));
 $("#add-line-item").addEventListener("click", () => addLineItem());
 onSubmit("#correction-form", async () => {
@@ -450,18 +547,27 @@ onSubmit("#decision-form", async (event) => {
 });
 onSubmit("#issue-form", async () => {
     clearIssuedToken();
+    const requestId = state.employeeTokenRequest;
     const issued = await api("/api/employees", { method: "POST", body: Object.fromEntries(new FormData($("#issue-form"))) });
+    if (requestId !== state.employeeTokenRequest || state.employee?.role !== "ADMIN" || state.view !== "employees") return;
     $("#issue-form").reset();
-    $("#issued-result").hidden = false;
-    $("#issued-employee").textContent = `${issued.employee.name} · ${issued.employee.loginId} · 직원 번호 #${issued.employee.id}`;
-    $("#issued-token").value = issued.setupToken;
-    $("#issued-expires").textContent = `유효 기간: ${dateTime(issued.expiresAt)}까지`;
+    showSetupToken("issued", issued);
     notify("직원 계정을 발급했습니다. 아래 설정 토큰을 확인하세요.");
 });
-$("#copy-token").addEventListener("click", (event) => run(event.currentTarget, async () => {
-    try { await navigator.clipboard.writeText($("#issued-token").value); notify("설정 토큰을 복사했습니다."); }
-    catch { $("#issued-token").select(); notify("토큰이 선택되었습니다. Command+C 또는 Ctrl+C로 복사하세요."); }
-}));
+onSubmit("#reissue-form", async () => {
+    clearIssuedToken();
+    const requestId = state.employeeTokenRequest;
+    const values = Object.fromEntries(new FormData($("#reissue-form")));
+    const issued = await api(`/api/employees/${encodeURIComponent(values.employeeId)}/setup-token`, { method: "POST" });
+    if (requestId !== state.employeeTokenRequest || state.employee?.role !== "ADMIN" || state.view !== "employees") return;
+    $("#reissue-form").reset();
+    showSetupToken("reissued", issued);
+    notify("새 비밀번호 설정 토큰을 발급했습니다. 기존 토큰 대신 새 토큰을 전달하세요.");
+});
+$("#copy-token").addEventListener("click", (event) =>
+    run(event.currentTarget, () => copySetupToken("#issued-token")));
+$("#copy-reissued-token").addEventListener("click", (event) =>
+    run(event.currentTarget, () => copySetupToken("#reissued-token")));
 onSubmit("#active-form", async () => {
     const values = Object.fromEntries(new FormData($("#active-form")));
     const employee = await api(`/api/employees/${encodeURIComponent(values.employeeId)}/active`, { method: "PATCH", body: { active: values.active === "true" } });

@@ -9,7 +9,9 @@ import com.example.receipt.domain.receipt.dto.ReviewDecisionRequest;
 import com.example.receipt.domain.receipt.dto.UploadResult;
 import com.example.receipt.domain.receipt.dto.ReceiptListRequest;
 import com.example.receipt.domain.receipt.dto.ReceiptPageResponse;
+import com.example.receipt.domain.receipt.dto.ReceiptImageResponse;
 import com.example.receipt.domain.receipt.service.ReceiptCommandService;
+import com.example.receipt.domain.receipt.service.ReceiptImageService;
 import com.example.receipt.domain.receipt.service.ReceiptQueryService;
 import com.example.receipt.domain.receipt.service.ReceiptUploadService;
 import jakarta.validation.Valid;
@@ -33,6 +35,7 @@ public class ReceiptController {
     private final ReceiptUploadService uploadService;
     private final ReceiptQueryService queryService;
     private final ReceiptCommandService commandService;
+    private final ReceiptImageService imageService;
 
     /** 모든 역할에서 로그인한 직원 본인의 제출 목록만 반환합니다. */
     @GetMapping
@@ -70,6 +73,17 @@ public class ReceiptController {
     @GetMapping("/{id}")
     public ReceiptResponse get(@PathVariable Long id) {
         return queryService.getReceiptDetail(id);
+    }
+
+    @GetMapping("/{id}/image")
+    public ResponseEntity<byte[]> image(@PathVariable Long id) {
+        ReceiptImageResponse image = imageService.getOriginalImage(id);
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(image.contentType()))
+                .contentLength(image.bytes().length)
+                .header(HttpHeaders.CONTENT_DISPOSITION, "inline")
+                .cacheControl(CacheControl.noStore())
+                .body(image.bytes());
     }
 
     @GetMapping("/{id}/audit-events")

@@ -1,7 +1,11 @@
 package com.example.receipt.global.exception;
 
+import com.example.receipt.domain.employee.exception.EmployeeSetupConflictException;
 import com.example.receipt.domain.receipt.exception.ReceiptConflictException;
 import com.example.receipt.domain.receipt.exception.ReceiptNotFoundException;
+import com.example.receipt.global.storage.UnsupportedReceiptImageException;
+import com.example.receipt.global.storage.ReceiptImageNotFoundException;
+import com.example.receipt.global.storage.ReceiptImageStorageException;
 import jakarta.validation.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.*;
@@ -25,7 +29,8 @@ public class ApiExceptionHandler {
         return problem(HttpStatus.NOT_FOUND, exception.getMessage());
     }
 
-    @ExceptionHandler({ReceiptConflictException.class, ObjectOptimisticLockingFailureException.class})
+    @ExceptionHandler({ReceiptConflictException.class, EmployeeSetupConflictException.class,
+            ObjectOptimisticLockingFailureException.class})
     ProblemDetail conflict(Exception exception) {
         return problem(HttpStatus.CONFLICT, exception.getMessage());
     }
@@ -39,6 +44,21 @@ public class ApiExceptionHandler {
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     ProblemDetail tooLarge(MaxUploadSizeExceededException exception) {
         return problem(HttpStatus.PAYLOAD_TOO_LARGE, "파일 크기는 10MB를 초과할 수 없습니다.");
+    }
+
+    @ExceptionHandler(UnsupportedReceiptImageException.class)
+    ProblemDetail unsupportedImage(UnsupportedReceiptImageException exception) {
+        return problem(HttpStatus.UNSUPPORTED_MEDIA_TYPE, exception.getMessage());
+    }
+
+    @ExceptionHandler(ReceiptImageNotFoundException.class)
+    ProblemDetail imageNotFound(ReceiptImageNotFoundException exception) {
+        return problem(HttpStatus.NOT_FOUND, exception.getMessage());
+    }
+
+    @ExceptionHandler(ReceiptImageStorageException.class)
+    ProblemDetail imageStorageFailure(ReceiptImageStorageException exception) {
+        return problem(HttpStatus.BAD_GATEWAY, "이미지 저장소에 접근하지 못했습니다. 잠시 후 다시 시도해 주세요.");
     }
 
     @ExceptionHandler(DataIntegrityViolationException.class)

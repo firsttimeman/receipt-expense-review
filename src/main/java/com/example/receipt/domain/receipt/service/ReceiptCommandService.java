@@ -98,8 +98,10 @@ public class ReceiptCommandService {
         validateReviewPermission(receipt, employee);
         ensureVersion(receipt, expectedVersion);
         validateEditableStatus(receipt);
-        if (receipt.status() == ReceiptStatus.NEEDS_RECAPTURE || receipt.status() == ReceiptStatus.UNREADABLE) {
-            throw new ReceiptConflictException("재촬영 또는 판독 불가 상태는 필드를 보완한 뒤 결정해야 합니다.");
+
+        // 반려는 내용이 누락되거나 사진을 읽지 못한 경우에도 할 수 있습니다.
+        if (decision == ReviewDecision.APPROVE) {
+            validateApproval(receipt);
         }
 
         ReceiptStatus previous = receipt.status();
@@ -114,6 +116,27 @@ public class ReceiptCommandService {
                 action, previous, next, decisionDetails));
         receiptRepository.flush();
         return receipt;
+    }
+
+    private void validateApproval(Receipt receipt) {
+        if (receipt.status() == ReceiptStatus.NEEDS_RECAPTURE || receipt.status() == ReceiptStatus.UNREADABLE) {
+            throw new ReceiptConflictException("재촬영 또는 판독 불가 상태는 필드를 보완한 뒤 승인할 수 있습니다.");
+        }
+
+        // 추출 당시 결과가 아닌, 수정 후 현재 저장된 내용을 확인합니다.
+        ReceiptData data = receipt.currentData();
+        if (data == null) {
+            throw new ReceiptConflictException("승인하려면 상호명, 사용일, 총 금액을 먼저 입력해 주세요.");
+        }
+        if (data.shopName() == null || data.shopName().isBlank()) {
+            throw new ReceiptConflictException("승인하려면 상호명을 입력해 주세요.");
+        }
+        if (data.date() == null) {
+            throw new ReceiptConflictException("승인하려면 사용일을 입력해 주세요.");
+        }
+        if (data.totalAmount() == null || data.totalAmount().signum() <= 0) {
+            throw new ReceiptConflictException("승인하려면 총 금액을 0보다 크게 입력해 주세요.");
+        }
     }
 
     private Receipt findReceipt(Long id) {

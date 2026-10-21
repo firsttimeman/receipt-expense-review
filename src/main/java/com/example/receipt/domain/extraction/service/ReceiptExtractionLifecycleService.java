@@ -71,18 +71,18 @@ public class ReceiptExtractionLifecycleService {
     }
 
     @Transactional
-    public Receipt scheduleRetry(ClaimedReceiptJob claimedJob, ExtractionException exception,
+    public Receipt scheduleRetry(ClaimedReceiptJob claimedJob, String errorCode, String errorMessage,
                                  Instant requestedRetryAt) {
         ReceiptExtractionJob job = findOwnedJob(claimedJob);
         Receipt receipt = findReceipt(claimedJob.receiptId());
         Instant now = Instant.now(clock);
         Instant nextRetryAt = requestedRetryAt.isAfter(now) ? requestedRetryAt : now.plusMillis(1);
         job.scheduleRetry(claimedJob.workerId(), claimedJob.claimToken(), nextRetryAt,
-                exception.getClass().getSimpleName(), exception.getMessage(), now);
+                errorCode, errorMessage, now);
 
         auditRepository.save(new AuditEvent(receipt.id(), now, "system",
                 AuditAction.EXTRACTION_RETRY_SCHEDULED, null, null,
-                retryDetails(job, exception, nextRetryAt, now)));
+                retryDetails(job, errorCode, nextRetryAt, now)));
         return receipt;
     }
 
@@ -108,10 +108,10 @@ public class ReceiptExtractionLifecycleService {
         return receipt;
     }
 
-    private Map<String, Object> retryDetails(ReceiptExtractionJob job, ExtractionException exception,
+    private Map<String, Object> retryDetails(ReceiptExtractionJob job, String errorCode,
                                              Instant nextRetryAt, Instant now) {
         Map<String, Object> details = new LinkedHashMap<>();
-        details.put("errorCode", exception.getClass().getSimpleName());
+        details.put("errorCode", errorCode);
         details.put("attemptCount", job.attemptCount());
         details.put("nextAvailableAt", nextRetryAt.toString());
         details.put("delayMillis", Duration.between(now, nextRetryAt).toMillis());

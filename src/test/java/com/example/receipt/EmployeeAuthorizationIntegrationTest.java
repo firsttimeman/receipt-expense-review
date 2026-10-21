@@ -7,6 +7,7 @@ import com.example.receipt.domain.employee.service.EmployeeService;
 import com.example.receipt.domain.employee.dto.SetPasswordRequest;
 import com.example.receipt.domain.receipt.repository.*;
 import com.example.receipt.domain.receipt.service.ReceiptUploadService;
+import com.example.receipt.domain.receipt.model.ReceiptData;
 import com.example.receipt.domain.receipt.model.ReceiptStatus;
 import com.example.receipt.domain.extraction.repository.ReceiptExtractionJobRepository;
 import com.example.receipt.domain.extraction.service.*;
@@ -14,15 +15,19 @@ import com.fasterxml.jackson.databind.*;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import jakarta.servlet.http.Cookie;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.*;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.test.context.*;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.web.servlet.*;
 import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.containers.GenericContainer;
@@ -33,6 +38,8 @@ import java.util.concurrent.*;
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
+import java.math.BigDecimal;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -43,6 +50,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 @ActiveProfiles("test")
 @AutoConfigureMockMvc
 @Testcontainers
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class EmployeeAuthorizationIntegrationTest {
     @Container static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.4");
     @Container static final GenericContainer<?> REDIS = new GenericContainer<>("redis:7.2-alpine").withExposedPorts(6379);
@@ -64,6 +72,8 @@ class EmployeeAuthorizationIntegrationTest {
     @Autowired ObjectMapper json;
     @Autowired EmployeeRepository employees;
     @Autowired EmployeeService employeeService;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired Clock clock;
     @Autowired ReceiptRepository receipts;
     @Autowired ReceiptExtractionJobRepository jobs;
     @Autowired AuditEventRepository audits;
@@ -98,8 +108,25 @@ class EmployeeAuthorizationIntegrationTest {
                 .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(Map.of("loginId", name, "name", name, "role", role))))
                 .andExpect(status().is(status)).andReturn());
     }
+    private ResultActions reissueSetupToken(Cookie session, long employeeId) throws Exception {
+        return mvc.perform(post("/api/employees/{id}/setup-token", employeeId).cookie(session).with(csrf()));
+    }
+    private ResultActions setPassword(String token, String password) throws Exception {
+        return mvc.perform(post("/api/auth/password").with(csrf()).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("token", token, "password", password))));
+    }
+    private String storedSetupTokenHash(long employeeId) {
+        return jdbc.queryForObject("select setup_token_hash from employees where id = ?", String.class, employeeId);
+    }
+    private String tokenHash(String token) throws Exception {
+        return HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(token.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    }
     private byte[] png(int marker) throws Exception {
-        var image = new BufferedImage(800, 800, BufferedImage.TYPE_INT_RGB); image.setRGB(0, 0, marker);
+        return png(marker, 800, 800);
+    }
+    private byte[] png(int marker, int width, int height) throws Exception {
+        var image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB); image.setRGB(0, 0, marker);
         var out = new ByteArrayOutputStream(); ImageIO.write(image, "png", out); return out.toByteArray();
     }
     private JsonNode upload(Cookie session, byte[] bytes, String key, int status) throws Exception {
@@ -155,6 +182,225 @@ class EmployeeAuthorizationIntegrationTest {
         mvc.perform(post("/api/auth/logout").cookie(session).with(csrf())).andExpect(status().isNoContent());
         mvc.perform(get("/api/auth/me").cookie(session)).andExpect(status().isUnauthorized());
         mvc.perform(get("/api/auth/me")).andExpect(status().isUnauthorized());
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void administratorCanReplaceValidOrExpiredSetupToken(boolean expired) throws Exception {
+        Cookie adminSession = login(admin);
+        JsonNode issued = issue(adminSession, "reissued-invite", "REVIEWER", 201);
+        long employeeId = issued.path("employee").path("id").asLong();
+        String oldToken = issued.path("setupToken").asText();
+        Employee before = employees.findById(employeeId).orElseThrow();
+        if (expired) {
+            before.invite(tokenHash(oldToken), Instant.now(clock).minusSeconds(60));
+            before = employees.saveAndFlush(before);
+            setPassword(oldToken, PASSWORD).andExpect(status().isBadRequest());
+        }
+        long employeeCount = employees.count();
+        Instant startedAt = Instant.now(clock);
+
+        JsonNode renewed = body(reissueSetupToken(adminSession, employeeId)
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andReturn());
+
+        Instant finishedAt = Instant.now(clock);
+        String newToken = renewed.path("setupToken").asText();
+        Instant expiresAt = Instant.parse(renewed.path("expiresAt").asText());
+        assertThat(newToken).hasSize(43).isNotEqualTo(oldToken).matches("[A-Za-z0-9_-]+");
+        assertThat(expiresAt).isBetween(startedAt.plus(Duration.ofHours(24)), finishedAt.plus(Duration.ofHours(24)));
+        assertThat(renewed.path("employee")).isEqualTo(issued.path("employee"));
+        assertThat(renewed.toString()).doesNotContain(oldToken, "passwordHash", "setupTokenHash");
+        assertThat(employees.count()).isEqualTo(employeeCount);
+        Employee after = employees.findById(employeeId).orElseThrow();
+        assertThat(after.loginId()).isEqualTo(before.loginId());
+        assertThat(after.name()).isEqualTo(before.name());
+        assertThat(after.role()).isEqualTo(before.role());
+        assertThat(after.active()).isEqualTo(before.active());
+        assertThat(after.sessionVersion()).isEqualTo(before.sessionVersion());
+        assertThat(after.passwordHash()).isNull();
+        assertThat(after.setupExpiresAt()).isBetween(expiresAt.minusMillis(1), expiresAt.plusMillis(1));
+        assertThat(storedSetupTokenHash(employeeId)).isEqualTo(tokenHash(newToken)).isNotEqualTo(newToken);
+
+        setPassword(oldToken, PASSWORD).andExpect(status().isBadRequest());
+        assertThat(employees.findById(employeeId).orElseThrow().passwordHash()).isNull();
+        setPassword(newToken, PASSWORD).andExpect(status().isNoContent());
+        setPassword(newToken, "another-password-123").andExpect(status().isBadRequest());
+        assertThat(storedSetupTokenHash(employeeId)).isNull();
+        assertThat(employees.findById(employeeId).orElseThrow().setupExpiresAt()).isNull();
+        mvc.perform(get("/api/auth/me").cookie(login("reissued-invite", PASSWORD)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.loginId").value("reissued-invite"))
+                .andExpect(jsonPath("$.role").value("REVIEWER"));
+    }
+
+    @Test void setupTokenReissueRequiresAdministratorAndCsrfWithoutChangingTheToken() throws Exception {
+        Cookie adminSession = login(admin);
+        JsonNode issued = issue(adminSession, "protected-invite", "EMPLOYEE", 201);
+        long employeeId = issued.path("employee").path("id").asLong();
+        String oldToken = issued.path("setupToken").asText();
+        Instant expiresAt = employees.findById(employeeId).orElseThrow().setupExpiresAt();
+        long employeeCount = employees.count();
+
+        mvc.perform(post("/api/employees/{id}/setup-token", employeeId).with(csrf()))
+                .andExpect(status().isUnauthorized());
+        reissueSetupToken(login(a), employeeId).andExpect(status().isForbidden());
+        reissueSetupToken(login(reviewer), employeeId).andExpect(status().isForbidden());
+        mvc.perform(post("/api/employees/{id}/setup-token", employeeId).cookie(adminSession))
+                .andExpect(status().isForbidden());
+
+        assertThat(employees.count()).isEqualTo(employeeCount);
+        assertThat(storedSetupTokenHash(employeeId)).isEqualTo(tokenHash(oldToken));
+        assertThat(employees.findById(employeeId).orElseThrow().setupExpiresAt()).isEqualTo(expiresAt);
+        setPassword(oldToken, PASSWORD).andExpect(status().isNoContent());
+    }
+
+    @Test void setupTokenReissueReturnsNotFoundForMissingEmployee() throws Exception {
+        long employeeCount = employees.count();
+        reissueSetupToken(login(admin), Long.MAX_VALUE).andExpect(status().isNotFound());
+        assertThat(employees.count()).isEqualTo(employeeCount);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"password-set", "inactive"})
+    void setupTokenReissueRejectsIneligibleAccountsWithoutChangingThem(String state) throws Exception {
+        Cookie adminSession = login(admin);
+        JsonNode issued = issue(adminSession, "ineligible-invite", "EMPLOYEE", 201);
+        long employeeId = issued.path("employee").path("id").asLong();
+        String oldToken = issued.path("setupToken").asText();
+        if ("password-set".equals(state)) {
+            setPassword(oldToken, PASSWORD).andExpect(status().isNoContent());
+        } else {
+            Employee employee = employees.findById(employeeId).orElseThrow();
+            employee.setActive(false);
+            employees.saveAndFlush(employee);
+        }
+        Employee before = employees.findById(employeeId).orElseThrow();
+        String oldHash = storedSetupTokenHash(employeeId);
+        long employeeCount = employees.count();
+
+        JsonNode response = body(reissueSetupToken(adminSession, employeeId)
+                .andExpect(status().isConflict()).andReturn());
+
+        assertThat(response.path("detail").asText()).isNotBlank();
+        assertThat(response.toString()).doesNotContain(oldToken, PASSWORD, "passwordHash", "setupTokenHash", "setupToken");
+        assertThat(employees.count()).isEqualTo(employeeCount);
+        Employee after = employees.findById(employeeId).orElseThrow();
+        assertThat(after.loginId()).isEqualTo(before.loginId());
+        assertThat(after.name()).isEqualTo(before.name());
+        assertThat(after.role()).isEqualTo(before.role());
+        assertThat(after.active()).isEqualTo(before.active());
+        assertThat(after.passwordHash()).isEqualTo(before.passwordHash());
+        assertThat(after.sessionVersion()).isEqualTo(before.sessionVersion());
+        assertThat(after.setupExpiresAt()).isEqualTo(before.setupExpiresAt());
+        assertThat(storedSetupTokenHash(employeeId)).isEqualTo(oldHash);
+        setPassword(oldToken, "replacement-password-123").andExpect(status().isBadRequest());
+        if ("password-set".equals(state)) {
+            login("ineligible-invite", PASSWORD);
+        }
+    }
+
+    @RepeatedTest(3)
+    void passwordSetupAndTokenReissueCannotOverwriteEachOther() throws Exception {
+        Cookie adminSession = login(admin);
+        JsonNode issued = issue(adminSession, "racing-invite", "EMPLOYEE", 201);
+        long employeeId = issued.path("employee").path("id").asLong();
+        String oldToken = issued.path("setupToken").asText();
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            Future<MvcResult> setup = executor.submit(() -> {
+                ready.countDown();
+                start.await();
+                return setPassword(oldToken, PASSWORD).andReturn();
+            });
+            Future<MvcResult> reissue = executor.submit(() -> {
+                ready.countDown();
+                start.await();
+                return reissueSetupToken(adminSession, employeeId).andReturn();
+            });
+            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            MvcResult setupResult = setup.get(20, TimeUnit.SECONDS);
+            MvcResult reissueResult = reissue.get(20, TimeUnit.SECONDS);
+            String expectedPassword;
+
+            if (setupResult.getResponse().getStatus() == 204) {
+                // 비밀번호 설정이 먼저 잠금을 얻었다면 재발급은 거절해야 합니다.
+                assertThat(reissueResult.getResponse().getStatus()).isEqualTo(409);
+                expectedPassword = PASSWORD;
+            } else {
+                // 재발급이 먼저 끝났다면 이전 토큰으로 비밀번호를 설정할 수 없습니다.
+                assertThat(setupResult.getResponse().getStatus()).isEqualTo(400);
+                assertThat(reissueResult.getResponse().getStatus()).isEqualTo(200);
+                assertThat(employees.findById(employeeId).orElseThrow().passwordHash()).isNull();
+                String newToken = body(reissueResult).path("setupToken").asText();
+                assertThat(storedSetupTokenHash(employeeId)).isEqualTo(tokenHash(newToken));
+                expectedPassword = "replacement-password-123";
+                setPassword(newToken, expectedPassword).andExpect(status().isNoContent());
+                setPassword(newToken, PASSWORD).andExpect(status().isBadRequest());
+            }
+
+            setPassword(oldToken, "unexpected-password-123").andExpect(status().isBadRequest());
+            Employee employee = employees.findById(employeeId).orElseThrow();
+            assertThat(new BCryptPasswordEncoder().matches(expectedPassword, employee.passwordHash())).isTrue();
+            assertThat(employee.setupExpiresAt()).isNull();
+            assertThat(storedSetupTokenHash(employeeId)).isNull();
+            login("racing-invite", expectedPassword);
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    @Test void concurrentReissuesLeaveOnlyOneUsableTokenForTheSameEmployee() throws Exception {
+        Cookie firstSession = login(admin);
+        Cookie secondSession = login(admin);
+        JsonNode issued = issue(firstSession, "double-reissue", "EMPLOYEE", 201);
+        long employeeId = issued.path("employee").path("id").asLong();
+        String oldToken = issued.path("setupToken").asText();
+        long employeeCount = employees.count();
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            List<Future<MvcResult>> futures = new ArrayList<>();
+            for (Cookie session : List.of(firstSession, secondSession)) {
+                futures.add(executor.submit(() -> {
+                    ready.countDown();
+                    start.await();
+                    return reissueSetupToken(session, employeeId).andReturn();
+                }));
+            }
+            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            MvcResult first = futures.get(0).get(20, TimeUnit.SECONDS);
+            MvcResult second = futures.get(1).get(20, TimeUnit.SECONDS);
+            assertThat(first.getResponse().getStatus()).isEqualTo(200);
+            assertThat(second.getResponse().getStatus()).isEqualTo(200);
+            String firstToken = body(first).path("setupToken").asText();
+            String secondToken = body(second).path("setupToken").asText();
+            assertThat(firstToken).isNotEqualTo(secondToken);
+            String currentHash = storedSetupTokenHash(employeeId);
+            String usableToken = tokenHash(firstToken).equals(currentHash) ? firstToken : secondToken;
+            String replacedToken = usableToken.equals(firstToken) ? secondToken : firstToken;
+            assertThat(currentHash).isEqualTo(tokenHash(usableToken));
+            assertThat(employees.count()).isEqualTo(employeeCount);
+
+            setPassword(oldToken, PASSWORD).andExpect(status().isBadRequest());
+            setPassword(replacedToken, PASSWORD).andExpect(status().isBadRequest());
+            setPassword(usableToken, PASSWORD).andExpect(status().isNoContent());
+            setPassword(usableToken, PASSWORD).andExpect(status().isBadRequest());
+            assertThat(storedSetupTokenHash(employeeId)).isNull();
+            login("double-reissue", PASSWORD);
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+        }
     }
 
     @Test void csrfIsRequiredIncludingLoginAndPasswordAndSessionRotatesOnLogin() throws Exception {
@@ -347,6 +593,130 @@ class EmployeeAuthorizationIntegrationTest {
             mvc.perform(get("/api/receipts/{id}/audit-events", id).cookie(sr)).andExpect(status().isOk());
             correction(sa, id, receipts.findById(id).orElseThrow().version()).andExpect(status().isConflict());
         }
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = ReceiptStatus.class, names = {"NEEDS_RECAPTURE", "UNREADABLE", "MANUAL_ENTRY"})
+    void reviewerCanRejectIncompleteReceiptWithoutBypassingOtherGuards(ReceiptStatus initialStatus) throws Exception {
+        Cookie submitterSession = login(a);
+        Cookie reviewerSession = login(reviewer);
+        long id = submitIncompleteReceipt(submitterSession, initialStatus);
+        var before = receipts.findById(id).orElseThrow();
+        long version = before.version();
+        long auditCount = audits.count();
+
+        decision(reviewerSession, id, version, "APPROVE").andExpect(status().isConflict());
+        decision(submitterSession, id, version, "REJECT").andExpect(status().isForbidden());
+        decision(reviewerSession, id, version - 1, "REJECT").andExpect(status().isConflict());
+        assertThat(receipts.findById(id).orElseThrow().status()).isEqualTo(initialStatus);
+        assertThat(receipts.findById(id).orElseThrow().version()).isEqualTo(version);
+        assertThat(audits.count()).isEqualTo(auditCount);
+
+        String note = "원본 확인 후 증빙 불충분으로 반려";
+        JsonNode rejected = body(mvc.perform(post("/api/receipts/{id}/decision", id)
+                        .cookie(reviewerSession).with(csrf()).contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("version", version, "decision", "REJECT", "note", note))))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(rejected.path("status").asText()).isEqualTo("REJECTED");
+        assertThat(rejected.path("version").asLong()).isGreaterThan(version);
+        var after = receipts.findById(id).orElseThrow();
+        assertThat(after.currentData()).isEqualTo(before.currentData());
+        assertThat(audits.count()).isEqualTo(auditCount + 1);
+        assertThat(audits.findByReceiptIdOrderByOccurredAtAsc(id))
+                .filteredOn(event -> event.action().name().equals("REVIEW_REJECTED"))
+                .singleElement().satisfies(event -> {
+                    assertThat(event.actor()).isEqualTo("employee:" + reviewer.id());
+                    assertThat(event.previousStatus()).isEqualTo(initialStatus);
+                    assertThat(event.newStatus()).isEqualTo(ReceiptStatus.REJECTED);
+                    assertThat(event.details()).containsEntry("note", note);
+                });
+
+        decision(reviewerSession, id, after.version(), "APPROVE").andExpect(status().isConflict());
+        decision(reviewerSession, id, after.version(), "REJECT").andExpect(status().isConflict());
+        correction(reviewerSession, id, after.version()).andExpect(status().isConflict());
+        assertThat(receipts.findById(id).orElseThrow().version()).isEqualTo(after.version());
+        assertThat(audits.count()).isEqualTo(auditCount + 1);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("incompleteApprovalData")
+    void approvalRequiresCurrentEssentialFields(String description, ReceiptData data, String errorMessage) throws Exception {
+        long id = submitIncompleteReceipt(login(a), ReceiptStatus.MANUAL_ENTRY);
+        var receipt = receipts.findById(id).orElseThrow();
+        receipt.updateData(data, receipt.ruleResults(), ReceiptStatus.MANUAL_ENTRY, Instant.now());
+        receipt = receipts.saveAndFlush(receipt);
+        long version = receipt.version();
+        long auditCount = audits.count();
+
+        decision(login(reviewer), id, version, "APPROVE")
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.detail").value(errorMessage));
+
+        var unchanged = receipts.findById(id).orElseThrow();
+        assertThat(unchanged.status()).isEqualTo(ReceiptStatus.MANUAL_ENTRY);
+        assertThat(unchanged.currentData()).isEqualTo(data);
+        assertThat(unchanged.version()).isEqualTo(version);
+        assertThat(audits.count()).isEqualTo(auditCount);
+    }
+
+    private static Stream<Arguments> incompleteApprovalData() {
+        LocalDate date = LocalDate.of(2026, 1, 15);
+        BigDecimal amount = new BigDecimal("12000");
+        String amountMessage = "승인하려면 총 금액을 0보다 크게 입력해 주세요.";
+        return Stream.of(
+                Arguments.of("추출 데이터 없음", null,
+                        "승인하려면 상호명, 사용일, 총 금액을 먼저 입력해 주세요."),
+                Arguments.of("상호명 없음", new ReceiptData(null, date, amount, null, null, List.of()),
+                        "승인하려면 상호명을 입력해 주세요."),
+                Arguments.of("공백 상호명", new ReceiptData("   ", date, amount, null, null, List.of()),
+                        "승인하려면 상호명을 입력해 주세요."),
+                Arguments.of("사용일 없음", new ReceiptData("테스트 상점", null, amount, null, null, List.of()),
+                        "승인하려면 사용일을 입력해 주세요."),
+                Arguments.of("총 금액 없음", new ReceiptData("테스트 상점", date, null, null, null, List.of()),
+                        amountMessage),
+                Arguments.of("총 금액 0", new ReceiptData("테스트 상점", date, BigDecimal.ZERO, null, null, List.of()),
+                        amountMessage),
+                Arguments.of("총 금액 음수", new ReceiptData("테스트 상점", date, new BigDecimal("-1"), null, null, List.of()),
+                        amountMessage)
+        );
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = ReceiptStatus.class, names = {"NEEDS_RECAPTURE", "UNREADABLE", "MANUAL_ENTRY"})
+    void incompleteReceiptCanBeApprovedAfterOwnerCorrectsEssentialFields(ReceiptStatus initialStatus) throws Exception {
+        Cookie submitterSession = login(a);
+        Cookie reviewerSession = login(reviewer);
+        long id = submitIncompleteReceipt(submitterSession, initialStatus);
+        long oldVersion = receipts.findById(id).orElseThrow().version();
+        JsonNode corrected = body(mvc.perform(patch("/api/receipts/{id}/fields", id)
+                        .cookie(submitterSession).with(csrf()).contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("version", oldVersion,
+                                "shopName", "직접 확인한 상점", "date", "2026-01-15", "totalAmount", 12000))))
+                .andExpect(status().isOk()).andReturn());
+        assertThat(corrected.path("status").asText()).isEqualTo("NEEDS_REVIEW");
+        assertThat(corrected.path("originalData")).isNotEqualTo(corrected.path("currentData"));
+
+        decision(reviewerSession, id, oldVersion, "APPROVE").andExpect(status().isConflict());
+        JsonNode approved = body(decision(reviewerSession, id, corrected.path("version").asLong(), "APPROVE")
+                .andExpect(status().isOk()).andReturn());
+        assertThat(approved.path("status").asText()).isEqualTo("APPROVED");
+        assertThat(approved.path("currentData").path("shopName").asText()).isEqualTo("직접 확인한 상점");
+        assertThat(audits.findByReceiptIdOrderByOccurredAtAsc(id))
+                .filteredOn(event -> event.action().name().equals("REVIEW_APPROVED"))
+                .singleElement().satisfies(event -> assertThat(event.actor()).isEqualTo("employee:" + reviewer.id()));
+    }
+
+    private long submitIncompleteReceipt(Cookie session, ReceiptStatus receiptStatus) throws Exception {
+        byte[] image = switch (receiptStatus) {
+            case NEEDS_RECAPTURE -> png(70, 200, 300);
+            case UNREADABLE -> Arrays.copyOf(png(70), 16);
+            default -> png(70);
+        };
+        String fileName = receiptStatus == ReceiptStatus.MANUAL_ENTRY ? "manual.png" : "receipt.png";
+        long id = upload(session, image, "incomplete-receipt", fileName, 202).path("receiptId").asLong();
+        process(id);
+        assertThat(receipts.findById(id).orElseThrow().status()).isEqualTo(receiptStatus);
+        return id;
     }
 
     @Test void crossOwnerDuplicateAndIdempotencyNeverReturnOrMutateOriginalReceipt() throws Exception {
