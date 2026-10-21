@@ -18,6 +18,7 @@ import com.example.receipt.domain.receipt.repository.AuditEventRepository;
 import com.example.receipt.domain.receipt.repository.ReceiptRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -64,7 +65,7 @@ public class ReceiptQueryService {
         request.validate();
 
         Long reviewerId = currentEmployeeService.getCurrentEmployee().id();
-        Page<Receipt> receiptPage = receiptRepository.findReviewQueue(
+        Page<Long> receiptIdPage = receiptRepository.findReviewQueueIds(
                 reviewerId,
                 REVIEW_PENDING_STATUSES,
                 request.status(),
@@ -73,7 +74,33 @@ public class ReceiptQueryService {
                 request.pageable()
         );
 
+        // ID 선별·전체 건수·본문 조회를 이 서비스의 같은 읽기 트랜잭션에서 처리합니다.
+        List<Receipt> receipts = loadReceiptsInPageOrder(receiptIdPage.getContent());
+        Page<Receipt> receiptPage = new PageImpl<>(
+                receipts, receiptIdPage.getPageable(), receiptIdPage.getTotalElements());
         return createPageResponse(receiptPage);
+    }
+
+    private List<Receipt> loadReceiptsInPageOrder(List<Long> receiptIds) {
+        if (receiptIds.isEmpty()) {
+            return List.of();
+        }
+
+        Map<Long, Receipt> receiptById = new HashMap<>();
+        for (Receipt receipt : receiptRepository.findAllById(receiptIds)) {
+            receiptById.put(receipt.id(), receipt);
+        }
+
+        // IN 조회 결과는 순서를 보장하지 않으므로 처음 고른 ID 순서대로 다시 담습니다.
+        List<Receipt> orderedReceipts = new ArrayList<>();
+        for (Long receiptId : receiptIds) {
+            Receipt receipt = receiptById.get(receiptId);
+            if (receipt == null) {
+                throw new ReceiptNotFoundException(receiptId);
+            }
+            orderedReceipts.add(receipt);
+        }
+        return orderedReceipts;
     }
 
     /** MySQL 기본 격리 수준(REPEATABLE READ)에서 영수증과 작업 상태를 같은 스냅샷으로 읽습니다. */

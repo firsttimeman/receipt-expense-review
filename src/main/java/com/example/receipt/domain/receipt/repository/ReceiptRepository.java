@@ -31,9 +31,18 @@ public interface ReceiptRepository extends JpaRepository<Receipt, Long> {
             Pageable pageable
     );
 
-    // 본인이 제출한 영수증과 소유자가 없는 과거 자료는 검수 목록에서 제외합니다.
-    @Query("""
-            select r from Receipt r
+    // 검수할 영수증 번호부터 고릅니다. 원본·수정 JSON은 선택된 페이지의 본문 조회에서 읽습니다.
+    // 본인 제출과 소유자 없는 자료의 제외 조건은 목록과 전체 건수 조회에 똑같이 적용합니다.
+    @Query(value = """
+            select r.id from Receipt r
+            where r.ownerEmployeeId is not null
+              and r.ownerEmployeeId <> :reviewerId
+              and r.status in :pendingStatuses
+              and (:status is null or r.status = :status)
+              and (:fromInclusive is null or r.createdAt >= :fromInclusive)
+              and (:toExclusive is null or r.createdAt < :toExclusive)
+            """, countQuery = """
+            select count(r.id) from Receipt r
             where r.ownerEmployeeId is not null
               and r.ownerEmployeeId <> :reviewerId
               and r.status in :pendingStatuses
@@ -41,7 +50,7 @@ public interface ReceiptRepository extends JpaRepository<Receipt, Long> {
               and (:fromInclusive is null or r.createdAt >= :fromInclusive)
               and (:toExclusive is null or r.createdAt < :toExclusive)
             """)
-    Page<Receipt> findReviewQueue(
+    Page<Long> findReviewQueueIds(
             @Param("reviewerId") Long reviewerId,
             @Param("pendingStatuses") List<ReceiptStatus> pendingStatuses,
             @Param("status") ReceiptStatus status,

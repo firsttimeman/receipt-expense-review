@@ -1,0 +1,1438 @@
+{
+  "uid": "receipt-review-comparison",
+  "title": "영수증 부하테스트 6차 — 검수 목록 개선 전후",
+  "description": "동일 1만·10만 건, 20 RPS 60초, 30초 준비 부하, 조건별 3회. 이전 12회와 개선 후 12회를 비교하고 당일 이전 코드 2회 재확인은 별도 표시합니다.",
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "liveNow": false,
+  "refresh": "30s",
+  "tags": [
+    "receipt",
+    "loadtest",
+    "review-queue",
+    "comparison"
+  ],
+  "timezone": "browser",
+  "time": {
+    "from": "now-48h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "comparison_id",
+        "label": "전후 비교",
+        "type": "query",
+        "datasource": {
+          "type": "influxdb",
+          "uid": "receipt-loadtest-influx"
+        },
+        "query": "SHOW TAG VALUES FROM \"receipt_review_comparison_summary\" WITH KEY=\"comparison_id\"",
+        "refresh": 1,
+        "sort": 2,
+        "multi": false,
+        "includeAll": false,
+        "options": []
+      },
+      {
+        "name": "run_id",
+        "label": "상세 실행",
+        "type": "query",
+        "datasource": {
+          "type": "influxdb",
+          "uid": "receipt-loadtest-influx"
+        },
+        "query": "SHOW TAG VALUES FROM \"receipt_review_comparison_summary\" WITH KEY=\"run_id\" WHERE \"comparison_id\" =~ /^$comparison_id$/",
+        "refresh": 1,
+        "sort": 2,
+        "multi": false,
+        "includeAll": false,
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "측정 범위와 읽는 방법",
+      "description": "",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 4
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**1만·10만 건 / 20 RPS / 측정 60초 / 준비 30초 / 각 3회.** 인덱스 추가와 ID 선조회 후 본문 20건 조회를 비교합니다. 전체 건수·권한·응답 내용은 동일합니다.\n\n전날 before와 오늘 after의 비교입니다. 오늘 이전 코드 재확인(control)은 별도 표이며 환경 변동도 고려해야 합니다. p95에는 실행된 타임아웃을 포함하고 미실행(dropped)은 별도 집계합니다. [측정 조건·SQL 실행 계획·한계 자세히 보기](https://app.notion.com/p/3fe3191bf3f081138558ccde2a3e19e4)\n\n위 비교는 전체 실행을 표시합니다. 아래 시계열은 상세 실행과 해당 시간 범위를 선택하세요. CPU 100%는 논리 CPU 하나 수준입니다."
+      }
+    },
+    {
+      "id": 2,
+      "type": "bargauge",
+      "title": "요청 p95 — 전후 각각 3회 중앙값",
+      "description": "60초 동안 주입한 요청의 응답 대기까지 포함한 전체 HTTP p95를 먼저 계산하고 같은 데이터 크기·조건의 세 값을 중앙값으로 비교합니다. 모든 요청을 합친 p95가 아닙니다. 단위: ms. 실제 실행된 요청의 타임아웃·HTTP 실패를 포함하며 미실행 dropped는 제외합니다. 타임아웃 표본은 서버의 완료 시간이 아닙니다.",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0,
+          "decimals": 2,
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT median(\"p95_ms\") FROM \"receipt_review_comparison_summary\" WHERE \"comparison_id\" =~ /^$comparison_id$/ AND \"phase\" =~ /^(before|after)$/ GROUP BY \"phase\",\"dataset\",\"scenario\"",
+          "resultFormat": "time_series",
+          "alias": "$tag_phase · $tag_dataset 건 · $tag_scenario"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true
+      }
+    },
+    {
+      "id": 3,
+      "type": "bargauge",
+      "title": "요청 p95 — 본비교 24회 모두 표시",
+      "description": "각 실행 전체 표본으로 k6가 계산한 p95입니다. 세 반복의 편차를 숨기지 않고 모두 표시합니다. 단위: ms. 실제 실행된 요청의 타임아웃·HTTP 실패를 포함하며 미실행 dropped는 제외합니다. 타임아웃 표본은 서버의 완료 시간이 아닙니다.",
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0,
+          "decimals": 2,
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT last(\"p95_ms\") FROM \"receipt_review_comparison_summary\" WHERE \"comparison_id\" =~ /^$comparison_id$/ AND \"phase\" =~ /^(before|after)$/ GROUP BY \"phase\",\"dataset\",\"scenario\",\"repeat\",\"run_id\"",
+          "resultFormat": "time_series",
+          "alias": "$tag_phase · $tag_dataset · $tag_scenario · #$tag_repeat"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true
+      }
+    },
+    {
+      "id": 4,
+      "type": "table",
+      "title": "본비교 24회 — 응답 시간·실패·미실행",
+      "description": "전후12회씩. 기존과부하의 실패·dropped·원본기준0도 포함합니다. control2회는별도표입니다. 원본기준0은성능기준미달 또는SQL근사집계차이일수있고 HTTP오류수와같지않습니다.",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 24,
+        "h": 11
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p95"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p99"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "평균"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "응답 크기"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "요청 수"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "실패"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "요청 누락"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "검증 통과"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT \"phase\" AS \"단계\", \"dataset\" AS \"건수\", \"scenario\" AS \"조건\", \"repeat\" AS \"반복\", \"run_id\" AS \"실행 ID\", \"p95_ms\" AS \"p95\", \"p99_ms\" AS \"p99\", \"mean_ms\" AS \"평균\", \"requests\" AS \"요청 수\", \"failures\" AS \"실패\", \"dropped\" AS \"요청 누락\", \"response_bytes_per_request\" AS \"응답 크기\", \"original_passed\" AS \"원본 기준\" FROM \"receipt_review_comparison_summary\" WHERE \"comparison_id\" =~ /^$comparison_id$/ AND \"phase\" =~ /^(before|after)$/ ORDER BY time ASC",
+          "resultFormat": "table",
+          "alias": ""
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {},
+            "renameByName": {}
+          }
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "bargauge",
+      "title": "단독 100건 — SQL 평균 실행 시간",
+      "description": "각단계·데이터·시나리오에서순차100건검증. page0결과를비교합니다. 개선후ids+entities로나뉘므로SQL수만으로개선을판정하지않습니다. 부하중HTTPp95와다른지표입니다.",
+      "gridPos": {
+        "x": 0,
+        "y": 23,
+        "w": 12,
+        "h": 11
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0,
+          "decimals": 3,
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT last(\"ms_per_call\") FROM \"receipt_review_comparison_serial\" WHERE \"comparison_id\" =~ /^$comparison_id$/ AND \"phase\" =~ /^(before|after)$/ AND \"page\"='0' GROUP BY \"phase\",\"dataset\",\"scenario\",\"kind\"",
+          "resultFormat": "time_series",
+          "alias": "$tag_phase · $tag_dataset · $tag_scenario · $tag_kind"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true
+      }
+    },
+    {
+      "id": 6,
+      "type": "bargauge",
+      "title": "단독 100건 — SQL 1회 검사 행",
+      "description": "각단계·데이터·시나리오에서순차100건검증. page0결과를비교합니다. 개선후ids+entities로나뉘므로SQL수만으로개선을판정하지않습니다. 부하중HTTPp95와다른지표입니다.",
+      "gridPos": {
+        "x": 12,
+        "y": 23,
+        "w": 12,
+        "h": 11
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT last(\"rows_examined_per_call\") FROM \"receipt_review_comparison_serial\" WHERE \"comparison_id\" =~ /^$comparison_id$/ AND \"phase\" =~ /^(before|after)$/ AND \"page\"='0' GROUP BY \"phase\",\"dataset\",\"scenario\",\"kind\"",
+          "resultFormat": "time_series",
+          "alias": "$tag_phase · $tag_dataset · $tag_scenario · $tag_kind"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true
+      }
+    },
+    {
+      "id": 7,
+      "type": "bargauge",
+      "title": "부하 중 HTTP당 SQL 시간 — 관측 창 근삿값",
+      "description": "각 SQL 종류 총 실행 시간 ÷ HTTP 요청 수(ms_per_request)의 반복 중앙값입니다. 목록과 COUNT의 기여도를 비교합니다. HTTP 전체 응답 시간과 별개입니다. 단위: ms/요청. SQL 차분은 요청 주입·응답 대기 구간의 근사 집계이며 준비 부하·타임아웃 뒤 잔여 쿼리와 측정창 경계의 영향을 받을 수 있습니다.",
+      "gridPos": {
+        "x": 0,
+        "y": 34,
+        "w": 12,
+        "h": 11
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0,
+          "decimals": 3,
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT median(\"ms_per_request\") FROM \"receipt_review_comparison_sql\" WHERE \"comparison_id\" =~ /^$comparison_id$/ AND \"phase\" =~ /^(before|after)$/ GROUP BY \"phase\",\"dataset\",\"scenario\",\"kind\"",
+          "resultFormat": "time_series",
+          "alias": "$tag_phase · $tag_dataset · $tag_scenario · $tag_kind"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true
+      }
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "부하 중 목록 관련 SQL — 단계별 근사 집계",
+      "description": "list와 count 각각의 실행 횟수, 총 DB 시간, 1회당 평균 시간·읽은 행·반환 행입니다. 동시 performance_schema 집계는 근사값입니다. 세 반복을 합쳐 단일 실행처럼 해석하지 마세요. SQL 차분은 요청 주입·응답 대기 구간의 근사 집계이며 준비 부하·타임아웃 뒤 잔여 쿼리와 측정창 경계의 영향을 받을 수 있습니다.",
+      "gridPos": {
+        "x": 12,
+        "y": 34,
+        "w": 12,
+        "h": 11
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "총 시간"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "평균 시간"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "횟수"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "읽은 행"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "반환 행"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT \"phase\" AS \"단계\", \"dataset\" AS \"건수\", \"scenario\" AS \"조건\", \"repeat\" AS \"반복\", \"kind\" AS \"SQL\", \"calls\" AS \"횟수\", \"total_ms\" AS \"총 시간\", \"ms_per_call\" AS \"평균 시간\", \"rows_examined_per_call\" AS \"읽은 행\", \"rows_sent_per_call\" AS \"반환 행\" FROM \"receipt_review_comparison_sql\" WHERE \"comparison_id\" =~ /^$comparison_id$/ AND \"phase\" =~ /^(before|after)$/ AND \"kind\" =~ /^(list|ids|entities|count)$/ ORDER BY time ASC",
+          "resultFormat": "table",
+          "alias": ""
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {},
+            "renameByName": {}
+          }
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "bargauge",
+      "title": "MySQL CPU — 전후 실행 평균의 중앙값",
+      "description": "Docker CPU의 2초 간격 표본으로 계산한 실행 평균을 세 번의 중앙값으로 비교합니다. CPU 코어 하나의 100%를 기준으로 하므로 다중 코어 사용 시 100%를 넘을 수 있습니다. 자원 표본 구간은 주입60초와 마지막 응답 대기(최대20초)를 포함합니다.",
+      "gridPos": {
+        "x": 0,
+        "y": 45,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "decimals": 2,
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT median(\"mysql_cpu_mean\") FROM \"receipt_review_comparison_summary\" WHERE \"comparison_id\" =~ /^$comparison_id$/ AND \"phase\" =~ /^(before|after)$/ GROUP BY \"phase\",\"dataset\",\"scenario\"",
+          "resultFormat": "time_series",
+          "alias": "$tag_phase · $tag_dataset · $tag_scenario"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true
+      }
+    },
+    {
+      "id": 10,
+      "type": "bargauge",
+      "title": "앱 CPU — 전후 실행 평균의 중앙값",
+      "description": "로컬 부하 발생기와 서버가 같은 호스트 자원을 사용합니다. CPU 코어 하나의 100%를 기준으로 하며 운영 환경의 처리 한계를 의미하지 않습니다. 자원 표본 구간은 주입60초와 마지막 응답 대기(최대20초)를 포함합니다.",
+      "gridPos": {
+        "x": 8,
+        "y": 45,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "decimals": 2,
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT median(\"app_cpu_mean\") FROM \"receipt_review_comparison_summary\" WHERE \"comparison_id\" =~ /^$comparison_id$/ AND \"phase\" =~ /^(before|after)$/ GROUP BY \"phase\",\"dataset\",\"scenario\"",
+          "resultFormat": "time_series",
+          "alias": "$tag_phase · $tag_dataset · $tag_scenario"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true
+      }
+    },
+    {
+      "id": 11,
+      "type": "bargauge",
+      "title": "앱 메모리 — 각 단계 3회 중 최대",
+      "description": "Docker 메모리 사용량의 2초 간격 표본 중 최댓값입니다. JVM 힙만의 값이나 순간 최대값이 아닙니다. 단위: MiB. 자원 표본 구간은 주입60초와 마지막 응답 대기(최대20초)를 포함합니다.",
+      "gridPos": {
+        "x": 16,
+        "y": 45,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "mebibytes",
+          "min": 0,
+          "decimals": 2,
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT max(\"app_memory_peak_mib\") FROM \"receipt_review_comparison_summary\" WHERE \"comparison_id\" =~ /^$comparison_id$/ AND \"phase\" =~ /^(before|after)$/ GROUP BY \"phase\",\"dataset\",\"scenario\"",
+          "resultFormat": "time_series",
+          "alias": "$tag_phase · $tag_dataset · $tag_scenario"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true
+      }
+    },
+    {
+      "id": 12,
+      "type": "bargauge",
+      "title": "응답 실패·미실행 — 전후 3회 합계",
+      "description": "failures는 실제 보낸 요청의 HTTP 응답·정합성 실패, dropped는 k6가 시작하지 못한 iteration 수입니다. 목표20RPS·maxVUs100 조건에서 dropped가 발생하면 목표 도착률을 유지하지 못한 것입니다. 실패 실행도 숨기지 않고 합계에 포함합니다.",
+      "gridPos": {
+        "x": 0,
+        "y": 53,
+        "w": 12,
+        "h": 6
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT sum(\"failures\"), sum(\"dropped\") FROM \"receipt_review_comparison_summary\" WHERE \"comparison_id\" =~ /^$comparison_id$/ AND \"phase\" =~ /^(before|after)$/ GROUP BY \"phase\",\"dataset\",\"scenario\"",
+          "resultFormat": "time_series",
+          "alias": "$tag_phase · $tag_dataset · $tag_scenario · $col"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true
+      }
+    },
+    {
+      "id": 13,
+      "type": "bargauge",
+      "title": "DB 열린 연결 — 각 단계 3회 중 최대",
+      "description": "MySQL에서 앱 컨테이너 IP로 열린 연결 수의 최대 2초 표본입니다. Hikari borrowed/pending 연결 수와 다르며 관측용 연결은 제외합니다. 자원 표본 구간은 주입60초와 마지막 응답 대기(최대20초)를 포함합니다.",
+      "gridPos": {
+        "x": 12,
+        "y": 53,
+        "w": 12,
+        "h": 6
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT max(\"db_connections_max\") FROM \"receipt_review_comparison_summary\" WHERE \"comparison_id\" =~ /^$comparison_id$/ AND \"phase\" =~ /^(before|after)$/ GROUP BY \"phase\",\"dataset\",\"scenario\"",
+          "resultFormat": "time_series",
+          "alias": "$tag_phase · $tag_dataset · $tag_scenario"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true
+      }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "선택 실행 — HTTP p95·p99 (10초 구간)",
+      "description": "k6 원시 지연 표본을 각 10초 구간별로 집계한 p95·p99입니다. 위쪽 전체 실행 p95와 다르며, 이 선의 평균·최댓값으로 전체 p95를 구할 수 없습니다. 단위: ms. 실제 실행된 요청의 타임아웃·HTTP 실패를 포함하며 미실행 dropped는 제외합니다. 타임아웃 표본은 서버의 완료 시간이 아닙니다.",
+      "gridPos": {
+        "x": 0,
+        "y": 59,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0,
+          "decimals": 2,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT percentile(\"value\",95) AS \"p95\", percentile(\"value\",99) AS \"p99\" FROM \"receipt_review_ms\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(10s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "$col"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "선택 실행 — 지연 표본 수 (10초 구간)",
+      "description": "원시 receipt_review_ms 표본 개수입니다. 각 표본은 HTTP 요청 한 번입니다. 부분 구간의 표본 수는 작을 수 있으며 준비 부하·로그인은 포함하지 않습니다. 타임아웃을 포함한 실행 요청 표본이며 dropped는 포함하지 않습니다.",
+      "gridPos": {
+        "x": 12,
+        "y": 59,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT count(\"value\") FROM \"receipt_review_ms\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(10s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "표본 수"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "선택 실행 — 앱·MySQL CPU",
+      "description": "Docker CPU의 2초 간격 표본입니다. CPU 코어 하나의 100%를 기준으로 합니다. 로컬에서 부하 발생기와 호스트 자원을 공유합니다. 자원 표본 구간은 주입60초와 마지막 응답 대기(최대20초)를 포함합니다.",
+      "gridPos": {
+        "x": 0,
+        "y": 67,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "decimals": 2,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT mean(\"cpu_percent\") FROM \"receipt_resources\" WHERE \"run_id\" =~ /^$run_id$/ AND \"service\" =~ /^(app|mysql)$/ AND $timeFilter GROUP BY time(2s),\"service\" fill(null)",
+          "resultFormat": "time_series",
+          "alias": "$tag_service"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "선택 실행 — 앱·MySQL 메모리",
+      "description": "컨테이너 메모리 사용량의 2초 간격 표본입니다. JVM 힙 전용 값이 아닙니다. 단위: bytes(자동 변환 표시). 자원 표본 구간은 주입60초와 마지막 응답 대기(최대20초)를 포함합니다.",
+      "gridPos": {
+        "x": 12,
+        "y": 67,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "decimals": 2,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT max(\"memory_bytes\") FROM \"receipt_resources\" WHERE \"run_id\" =~ /^$run_id$/ AND \"service\" =~ /^(app|mysql)$/ AND $timeFilter GROUP BY time(2s),\"service\" fill(null)",
+          "resultFormat": "time_series",
+          "alias": "$tag_service"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "선택 실행 — DB 연결과 실행 중인 SQL",
+      "description": "앱 IP의 MySQL 연결만 집계하며 관측용 연결은 제외합니다. SQL 실행 중 값은 2초마다 관측한 수이므로 짧은 피크를 놓칠 수 있습니다. Hikari 사용 중·대기 연결 수가 아닙니다. 실행 중 연결이10개여도 Hikari 대기 시간은 직접 측정하지 않았으므로 풀 대기를 확정할 수 없습니다. 자원 표본 구간은 주입60초와 마지막 응답 대기(최대20초)를 포함합니다.",
+      "gridPos": {
+        "x": 0,
+        "y": 75,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT max(\"app_connections\") AS \"열린 연결\", max(\"app_query_active\") AS \"SQL 실행 중\" FROM \"receipt_db_connections\" WHERE \"run_id\" =~ /^$run_id$/ AND $timeFilter GROUP BY time(2s) fill(null)",
+          "resultFormat": "time_series",
+          "alias": "$col"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 19,
+      "type": "text",
+      "title": "해석 시 주의",
+      "description": "",
+      "gridPos": {
+        "x": 12,
+        "y": 75,
+        "w": 12,
+        "h": 8
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "- 본비교는before/after각12회입니다. control은당일개선전재확인2회이고본비교중앙값에합치지않습니다.\n- 개선전실패·미실행을포함하며p95에dropped는포함하지않습니다. 최대TPS나운영성능으로일반화하지않습니다.\n- SQL4종이개선후5종으로늘어도큰본문전체읽기를줄일수있습니다. employee/ids/entities/count/jobs의단독SQL시간·검사행·실행계획을함께보세요.\n- 집계차분은윈도근사값입니다. 준비부하·timeout뒤잔여SQL과관측창경계영향을분리확정하지않았습니다.\n- 같은Mac에서DB/k6/앱이자원을공유하며전후무작위교차측정이아닙니다. 동일데이터/응답SHA256/환경증거와별도기능검증이필요합니다.\n- DB실행중연결은Hikari대기시간측정이아닙니다.\n- AI/S3호출은없고추출기2초설정만유지했습니다. 프론트자동조회제거는이번API성능변화와별도입니다."
+      }
+    },
+    {
+      "id": 20,
+      "type": "table",
+      "title": "보조 확인 — 같은 날 이전 코드 전체 목록 각 1회",
+      "description": "control2회는환경변동을살펴보는보조결과이며반복3회중앙값과합치지않습니다.",
+      "gridPos": {
+        "x": 0,
+        "y": 83,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "receipt-loadtest-influx"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p95"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p99"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "평균"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "응답 크기"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "요청 수"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "실패"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "요청 누락"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "검증 통과"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "receipt-loadtest-influx"
+          },
+          "rawQuery": true,
+          "query": "SELECT \"phase\" AS \"단계\", \"dataset\" AS \"건수\", \"scenario\" AS \"조건\", \"repeat\" AS \"반복\", \"run_id\" AS \"실행 ID\", \"p95_ms\" AS \"p95\", \"p99_ms\" AS \"p99\", \"mean_ms\" AS \"평균\", \"requests\" AS \"요청 수\", \"failures\" AS \"실패\", \"dropped\" AS \"요청 누락\", \"response_bytes_per_request\" AS \"응답 크기\", \"original_passed\" AS \"원본 기준\" FROM \"receipt_review_comparison_summary\" WHERE \"comparison_id\" =~ /^$comparison_id$/ AND \"phase\"='control' ORDER BY time ASC",
+          "resultFormat": "table",
+          "alias": ""
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {},
+            "renameByName": {}
+          }
+        }
+      ]
+    }
+  ]
+}

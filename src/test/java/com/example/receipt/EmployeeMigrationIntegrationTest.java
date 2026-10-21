@@ -44,7 +44,9 @@ class EmployeeMigrationIntegrationTest {
         }
 
         var flyway = Flyway.configure().dataSource(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword()).load();
-        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
+        // 변경 파일 개수 대신, 최신 스키마까지 모두 정상 적용됐는지 확인합니다.
+        assertThat(flyway.migrate().success).isTrue();
+        assertThat(flyway.info().pending()).isEmpty();
         flyway.validate();
         try (var connection = DriverManager.getConnection(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
              var sql = connection.createStatement()) {

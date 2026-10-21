@@ -255,6 +255,38 @@ class ReceiptListingWorkflowIntegrationTest {
     }
 
     @Test
+    void reviewQueuePreservesPageOrderAndTotalWhenLoadingSelectedReceipts() throws Exception {
+        long first = receipt(employee, ReceiptStatus.NEEDS_REVIEW, SUBMITTED_AT).id();
+        long second = receipt(other, ReceiptStatus.MANUAL_ENTRY, SUBMITTED_AT).id();
+        long third = receipt(employee, ReceiptStatus.NEEDS_RECAPTURE, SUBMITTED_AT).id();
+        long fourth = receipt(other, ReceiptStatus.UNREADABLE, SUBMITTED_AT).id();
+        long latest = receipt(employee, ReceiptStatus.NEEDS_REVIEW, SUBMITTED_AT.plusSeconds(1)).id();
+        receipt(reviewer, ReceiptStatus.NEEDS_REVIEW, SUBMITTED_AT.plusSeconds(2));
+        receipt(null, ReceiptStatus.NEEDS_REVIEW, SUBMITTED_AT.plusSeconds(2));
+        receipt(employee, ReceiptStatus.APPROVED, SUBMITTED_AT.plusSeconds(2));
+        receipt(employee, null, SUBMITTED_AT.plusSeconds(2));
+
+        Browser browser = login(reviewer);
+        List<List<Long>> expectedPages = List.of(List.of(latest, fourth), List.of(third, second), List.of(first));
+        for (int pageNumber = 0; pageNumber < expectedPages.size(); pageNumber++) {
+            JsonNode page = browser.page(server, "/api/receipts/review-queue?page=" + pageNumber + "&size=2");
+            assertThat(ids(page)).as("검수 목록 page=%s", pageNumber)
+                    .containsExactlyElementsOf(expectedPages.get(pageNumber));
+            assertThat(page.path("totalElements").asLong()).isEqualTo(5);
+            assertThat(page.path("totalPages").asInt()).isEqualTo(3);
+            assertThat(page.path("page").asInt()).isEqualTo(pageNumber);
+            assertThat(page.path("size").asInt()).isEqualTo(2);
+            assertThat(page.path("hasNext").asBoolean()).isEqualTo(pageNumber < 2);
+        }
+
+        JsonNode outside = browser.page(server, "/api/receipts/review-queue?page=99&size=2");
+        assertThat(ids(outside)).isEmpty();
+        assertThat(outside.path("totalElements").asLong()).isEqualTo(5);
+        assertThat(outside.path("totalPages").asInt()).isEqualTo(3);
+        assertThat(outside.path("hasNext").asBoolean()).isFalse();
+    }
+
+    @Test
     void submissionDateUsesInclusiveKoreanCalendarDaysAndCombinesWithStatus() throws Exception {
         Instant start = Instant.parse("2026-09-30T15:00:00Z");
         Instant end = Instant.parse("2026-10-01T15:00:00Z");
@@ -263,7 +295,10 @@ class ReceiptListingWorkflowIntegrationTest {
         long approved = receipt(employee, ReceiptStatus.APPROVED, start.plusSeconds(1)).id();
         long atLast = receipt(employee, ReceiptStatus.NEEDS_REVIEW, end.minusNanos(1000)).id();
         long after = receipt(employee, ReceiptStatus.NEEDS_REVIEW, end).id();
-        receipt(other, ReceiptStatus.NEEDS_REVIEW, start.plusSeconds(2));
+        long otherAtStart = receipt(other, ReceiptStatus.NEEDS_REVIEW, start.plusSeconds(2)).id();
+        long manualEntry = receipt(other, ReceiptStatus.MANUAL_ENTRY, start.plusSeconds(3)).id();
+        receipt(reviewer, ReceiptStatus.NEEDS_REVIEW, start.plusSeconds(4));
+        receipt(null, ReceiptStatus.NEEDS_REVIEW, start.plusSeconds(4));
 
         Browser browser = login(employee);
         String range = "from=2026-10-01&to=2026-10-01";
@@ -278,8 +313,12 @@ class ReceiptListingWorkflowIntegrationTest {
         assertThat(ids(browser.page(server, "/api/receipts?from=2026-10-01"))).containsExactly(after, atLast, approved, atStart);
         Browser inspector = login(reviewer);
         JsonNode queue = inspector.page(server, "/api/receipts/review-queue?" + range);
-        assertThat(queue.path("totalElements").asLong()).isEqualTo(3);
-        assertThat(ids(queue)).contains(atLast, atStart).doesNotContain(before, after, approved);
+        assertThat(queue.path("totalElements").asLong()).isEqualTo(4);
+        assertThat(ids(queue)).containsExactly(atLast, manualEntry, otherAtStart, atStart);
+        JsonNode queueFiltered = inspector.page(server,
+                "/api/receipts/review-queue?" + range + "&status=NEEDS_REVIEW");
+        assertThat(ids(queueFiltered)).containsExactly(atLast, otherAtStart, atStart);
+        assertThat(queueFiltered.path("totalElements").asLong()).isEqualTo(3);
         JsonNode queuePage = inspector.page(server,
                 "/api/receipts/review-queue?" + range + "&status=NEEDS_REVIEW&size=1");
         assertThat(ids(queuePage)).containsExactly(atLast);
